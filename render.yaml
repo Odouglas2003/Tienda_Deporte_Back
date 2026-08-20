@@ -23,17 +23,3 @@ services:
         value: 7d
       - key: CLIENT_URL
         sync: false
-
-  - type: web
-    name: tienda-front
-    runtime: node
-    plan: free
-    repo: https://github.com/Odouglas2003/Tienda_Deporte_Front.git
-    branch: main
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NEXT_PUBLIC_API_URL
-        sync: false
