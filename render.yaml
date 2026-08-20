@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: tienda-back-nest
+    runtime: node
+    plan: free
+    repo: https://github.com/Odouglas2003/Tienda_Deporte_Back.git
+    branch: main
+    buildCommand: npm ci && npm run prisma:generate && npm run build:nest
+    startCommand: npm run start:nest
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: CLIENT_URL
+        sync: false
+
+  - type: web
+    name: tienda-front
+    runtime: node
+    plan: free
+    repo: https://github.com/Odouglas2003/Tienda_Deporte_Front.git
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        sync: false

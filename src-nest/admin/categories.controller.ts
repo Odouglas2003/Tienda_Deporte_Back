@@ -1,0 +1,5 @@
+import { Body, Controller, Delete, Get, Param, Post, Put, UseGuards } from '@nestjs/common'
+import { UserRole } from '@prisma/client'
+import { AuthGuard } from '../auth/auth.guard'; import { Roles } from '../auth/auth.decorator'; import { RolesGuard } from '../auth/roles.guard'; import { CategoriesService } from './categories.service'
+@Controller('categories')
+export class CategoriesController { constructor(private readonly categories: CategoriesService) {} @Get() list() { return this.categories.list() } @UseGuards(AuthGuard, RolesGuard) @Roles(UserRole.admin, UserRole.superAdmin) @Post() create(@Body() body: any) { return this.categories.create(body) } @UseGuards(AuthGuard, RolesGuard) @Roles(UserRole.admin, UserRole.superAdmin) @Put(':id') update(@Param('id') id: string, @Body() body: any) { return this.categories.update(id, body) } @UseGuards(AuthGuard, RolesGuard) @Roles(UserRole.admin, UserRole.superAdmin) @Delete(':id') remove(@Param('id') id: string) { return this.categories.remove(id) } }

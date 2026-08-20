@@ -22,6 +22,7 @@ const createOneOrder = asyncHandler(async (req, res) => {
     user: req.auth.sub,
     items: req.body.items,
     paymentMethod: req.body.paymentMethod,
+    shipping: req.body.shipping,
   })
 
   res.status(201).json(new ApiResponse({ message: 'Pedido creado correctamente', data: order }))

@@ -8,6 +8,7 @@ const sellersRoutes = require('./sellers.routes')
 const reportsRoutes = require('./reports.routes')
 const settingsRoutes = require('./settings.routes')
 const activityLogsRoutes = require('./activityLogs.routes')
+const communicationsRoutes = require('./communications.routes')
 
 const router = Router()
 
@@ -20,5 +21,6 @@ router.use('/sellers', sellersRoutes)
 router.use('/reports', reportsRoutes)
 router.use('/settings', settingsRoutes)
 router.use('/activity-logs', activityLogsRoutes)
+router.use('/communications', communicationsRoutes)
 
 module.exports = router

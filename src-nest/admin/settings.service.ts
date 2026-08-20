@@ -1,0 +1,3 @@
+import { Injectable } from '@nestjs/common'
+import { PrismaService } from '../prisma.service'
+@Injectable() export class SettingsService { constructor(private readonly prisma: PrismaService) {} get() { return this.prisma.settings.findFirst().then((settings) => settings ?? this.prisma.settings.create({ data: { paymentMethods: ['transferencia'], automaticMessages: {} } })) } update(body: any) { return this.prisma.settings.findFirst().then((current) => current ? this.prisma.settings.update({ where: { id: current.id }, data: body }) : this.prisma.settings.create({ data: { ...body, paymentMethods: body.paymentMethods ?? [] } })) } }

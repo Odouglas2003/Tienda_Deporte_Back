@@ -16,7 +16,15 @@ const orderSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     items: { type: [orderItemSchema], default: [] },
     total: { type: Number, required: true, min: 0 },
+    shippingCost: { type: Number, default: 0, min: 0 },
     paymentMethod: { type: String, required: true },
+    shipping: {
+      address: { type: String, default: '' },
+      city: { type: String, default: '' },
+      postalCode: { type: String, default: '' },
+      phone: { type: String, default: '' },
+      notes: { type: String, default: '' },
+    },
     status: {
       type: String,
       enum: ['pendiente', 'en revision', 'aprobado', 'rechazado', 'en preparacion', 'entregado', 'cancelado'],

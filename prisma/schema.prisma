@@ -1,0 +1,190 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  cliente
+  vendedor
+  admin
+  superAdmin
+}
+
+enum AccountType {
+  minorista
+  mayorista
+}
+
+enum ApprovalStatus {
+  approved
+  pending
+  rejected
+}
+
+enum OrderStatus {
+  pendiente
+  en_revision    @map("en revision")
+  aprobado
+  rechazado
+  en_preparacion @map("en preparacion")
+  entregado
+  cancelado
+}
+
+enum ContactStatus {
+  nuevo
+  leido
+  respondido
+}
+
+model User {
+  id                  String         @id @default(cuid())
+  name                String
+  email               String         @unique
+  password            String
+  role                UserRole       @default(cliente)
+  accountType         AccountType    @default(minorista)
+  approved            Boolean        @default(false)
+  approvalStatus      ApprovalStatus @default(approved)
+  assignedSellerId    String?
+  assignedSeller      User?          @relation("SellerClients", fields: [assignedSellerId], references: [id])
+  assignedClients     User[]         @relation("SellerClients")
+  mustChangePassword  Boolean        @default(false)
+  active              Boolean        @default(true)
+  phone               String         @default("")
+  cuit                String         @default("")
+  businessName        String         @default("")
+  deletedAt           DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  orders              Order[]        @relation("CustomerOrders")
+  sellerOrders        Order[]        @relation("SellerOrders")
+  activityLogs        ActivityLog[]
+
+  @@index([accountType, approvalStatus])
+  @@index([role, active])
+}
+
+model Product {
+  id             String      @id @default(cuid())
+  name           String
+  sku            String      @unique
+  description    String      @default("")
+  category       String
+  categories     String[]
+  subcategory    String      @default("")
+  brand          String      @default("")
+  priceRetail    Float
+  priceWholesale Float
+  tax            Float       @default(0)
+  stock          Int         @default(0)
+  images         String[]
+  tags           String[]
+  featured       Boolean     @default(false)
+  discount       Float       @default(0)
+  newArrival     Boolean     @default(false)
+  active         Boolean     @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  orderItems     OrderItem[]
+
+  @@index([category, active])
+  @@index([brand, active])
+}
+
+model Category {
+  id             String   @id @default(cuid())
+  name           String
+  normalizedName String   @unique
+  slug           String
+  description    String   @default("")
+  active         Boolean  @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Order {
+  id           String      @id @default(cuid())
+  code         String      @unique @default(cuid())
+  userId       String
+  user         User        @relation("CustomerOrders", fields: [userId], references: [id])
+  sellerId     String?
+  seller       User?       @relation("SellerOrders", fields: [sellerId], references: [id])
+  items        OrderItem[]
+  total        Float
+  shippingCost Float       @default(0)
+  paymentMethod String
+  status       OrderStatus @default(pendiente)
+  shipping     Json?
+  deletedAt    DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([sellerId, status])
+}
+
+model OrderItem {
+  id         String  @id @default(cuid())
+  orderId    String
+  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product @relation(fields: [productId], references: [id])
+  productName String
+  quantity   Int
+  unitPrice  Float
+  subtotal   Float
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, createdAt])
+}
+
+model Settings {
+  id                String   @id @default(cuid())
+  minWholesaleOrder Float    @default(0)
+  taxPercentage     Float    @default(0)
+  paymentMethods    String[]
+  whatsappNumber    String   @default("")
+  automaticMessages Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model ContactMessage {
+  id        String        @id @default(cuid())
+  name      String
+  email     String
+  phone     String        @default("")
+  subject   String
+  message   String
+  status    ContactStatus @default(nuevo)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model NewsletterSubscriber {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  active       Boolean  @default(true)
+  subscribedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
