@@ -5,7 +5,7 @@ services:
     plan: free
     repo: https://github.com/Odouglas2003/Tienda_Deporte_Back.git
     branch: main
-    buildCommand: npm ci && npm run prisma:generate && npm run build:nest
+    buildCommand: npm ci --include=dev && npm run prisma:generate && npm run build:nest
     startCommand: npm run start:nest
     healthCheckPath: /api/health
     envVars:
