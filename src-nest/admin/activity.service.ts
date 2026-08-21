@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { UserRole } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 
 type TrackActivity =
@@ -11,14 +12,19 @@ export class ActivityService {
 
   list(search?: string) {
     return this.prisma.activityLog.findMany({
-      where: search ? {
-        OR: [
-          { action: { contains: search, mode: 'insensitive' } },
-          { entity: { contains: search, mode: 'insensitive' } },
-          { user: { is: { name: { contains: search, mode: 'insensitive' } } } },
-          { user: { is: { email: { contains: search, mode: 'insensitive' } } } },
+      where: {
+        AND: [
+          { user: { is: { role: { notIn: [UserRole.admin, UserRole.superAdmin] } } } },
+          ...(search ? [{
+            OR: [
+              { action: { contains: search, mode: 'insensitive' as const } },
+              { entity: { contains: search, mode: 'insensitive' as const } },
+              { user: { is: { name: { contains: search, mode: 'insensitive' as const } } } },
+              { user: { is: { email: { contains: search, mode: 'insensitive' as const } } } },
+            ],
+          }] : []),
         ],
-      } : undefined,
+      },
       include: { user: { select: { name: true, email: true, role: true, accountType: true, businessName: true } } },
       orderBy: { createdAt: 'desc' },
       take: 250,
