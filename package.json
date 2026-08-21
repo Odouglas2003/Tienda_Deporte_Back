@@ -15,6 +15,7 @@
     "prisma:studio": "prisma studio",
     "seed": "node scripts/seed.js",
     "seed:prisma:admin": "node scripts/seed-prisma-admin.js",
+    "seed:prisma:categories": "node scripts/seed-prisma-categories.js",
     "seed:reset": "node scripts/seed.js --reset"
   },
   "dependencies": {
