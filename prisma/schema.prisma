@@ -162,6 +162,8 @@ model Settings {
   paymentMethods    String[]
   whatsappNumber    String   @default("")
   automaticMessages Json?
+  navigationBrands  Json?
+  navigationDisciplines Json?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
