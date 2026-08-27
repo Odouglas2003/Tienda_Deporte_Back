@@ -2,6 +2,41 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 
+const COLOR_PATTERN = /\b(azul\s+marino|negro|negra|blanco|blanca|azul|verde|rojo|roja|gris|amarillo|amarilla|naranja|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo)\b/i
+const SIZE_PATTERN = /\b(XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
+const LABELED_SIZE_PATTERN = /\btalle\s*(\d{1,3}|XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
+
+function cleanText(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function titleCase(value: string) {
+  return value.toLowerCase().replace(/(^|\s)\p{L}/gu, (letter) => letter.toUpperCase())
+}
+
+function extractVariantValue(row: any, field: 'color' | 'size') {
+  const explicit = cleanText(field === 'color' ? row?.color : row?.size || row?.talle)
+  if (explicit) return titleCase(explicit)
+  const title = cleanText(row?.title || row?.name)
+  const match = field === 'color' ? title.match(COLOR_PATTERN) : title.match(LABELED_SIZE_PATTERN) ?? title.match(SIZE_PATTERN)
+  return match ? titleCase(match[1]) : ''
+}
+
+function baseProductName(row: any) {
+  let name = cleanText(row?.title || row?.name)
+  const color = extractVariantValue(row, 'color')
+  const size = extractVariantValue(row, 'size')
+  if (color) name = name.replace(new RegExp(`\\b${color.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
+  if (size) name = name.replace(new RegExp(`\\b(?:talle\\s*)?${size.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
+  return name.replace(/\s*[-|/]\s*/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function variantGroupKey(row: any) {
+  const category = cleanText(row?.category || row?.google_product_category || row?.fb_product_category).toLowerCase()
+  const brand = cleanText(row?.brand).toLowerCase()
+  return `${category}|${brand}|${baseProductName(row).toLowerCase()}`
+}
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -53,6 +88,16 @@ export class ProductsService {
       return Number.isFinite(parsed) ? parsed : null
     }
 
+    const validRows: Array<{
+      row: any
+      rowNumber: number
+      sku: string
+      name: string
+      category: string
+      priceRetail: number
+      priceWholesale: number
+    }> = []
+
     for (const [index, row] of rows.entries()) {
       const rowNumber = Number(row?.rowNumber) || index + 2
       const sku = text(row?.id || row?.sku)
@@ -73,38 +118,64 @@ export class ProductsService {
         continue
       }
 
-      const retail = priceRetail as number
-      const wholesale = priceWholesale as number
+      validRows.push({ row, rowNumber, sku, name, category, priceRetail: priceRetail as number, priceWholesale: priceWholesale as number })
+    }
 
+    const groups = new Map<string, typeof validRows>()
+    for (const item of validRows) {
+      const key = variantGroupKey(item.row)
+      groups.set(key, [...(groups.get(key) ?? []), item])
+    }
+
+    for (const group of groups.values()) {
+      const first = group[0]
+      const variantSkus = Array.from(new Set(group.map((item) => item.sku)))
       try {
-        const existing = await this.prisma.product.findUnique({ where: { sku } })
-        const categories = Array.from(new Set([category, ...(Array.isArray(row?.categories) ? row.categories : [])].map(text).filter(Boolean)))
-        const colors = [text(row?.color)].filter(Boolean)
-        const sizes = [text(row?.size || row?.talle)].filter(Boolean)
+        const existing = await this.prisma.product.findUnique({ where: { sku: first.sku } })
+        const categories = Array.from(new Set([first.category, ...(Array.isArray(first.row?.categories) ? first.row.categories : [])].map(text).filter(Boolean)))
+        const variants = group.map((item) => ({
+          sku: item.sku,
+          color: extractVariantValue(item.row, 'color'),
+          size: extractVariantValue(item.row, 'size'),
+          image: text(item.row?.image_link || item.row?.image),
+          stock: Math.max(0, Math.round(number(item.row?.stock ?? item.row?.quantity_to_sell_on_facebook) ?? (/^(in stock|disponible|si|sí)$/i.test(text(item.row?.availability)) ? 1 : 0))),
+          priceRetail: item.priceRetail,
+          priceWholesale: item.priceWholesale,
+        }))
+        const colors = Array.from(new Set(variants.map((variant) => variant.color).filter(Boolean)))
+        const sizes = Array.from(new Set(variants.map((variant) => variant.size).filter(Boolean)))
+        const images = Array.from(new Set(variants.map((variant) => variant.image).filter(Boolean)))
         const data = {
-          sku,
-          name,
-          description: text(row?.description),
-          category,
+          sku: first.sku,
+          name: baseProductName(first.row) || first.name,
+          description: text(first.row?.description),
+          category: first.category,
           categories,
-          subcategory: text(row?.subcategory || row?.['style[0]']).toLowerCase(),
-          brand: text(row?.brand),
-          priceRetail: retail,
-          priceWholesale: wholesale,
-          stock: Math.max(0, Math.round(number(row?.stock ?? row?.quantity_to_sell_on_facebook) ?? (/^(in stock|disponible|si|sí)$/i.test(text(row?.availability)) ? 1 : 0))),
-          tax: number(row?.tax) ?? 0,
-          images: text(row?.image_link || row?.image) ? [text(row?.image_link || row?.image)] : [],
+          subcategory: text(first.row?.subcategory || first.row?.['style[0]']).toLowerCase(),
+          brand: text(first.row?.brand),
+          priceRetail: Math.min(...variants.map((variant) => variant.priceRetail)),
+          priceWholesale: Math.min(...variants.map((variant) => variant.priceWholesale)),
+          stock: variants.reduce((total, variant) => total + variant.stock, 0),
+          tax: number(first.row?.tax) ?? 0,
+          images,
           colors,
           sizes,
-          tags: [text(row?.['product_tags[0]']), text(row?.['product_tags[1]'])].filter(Boolean),
+          variants: variants as Prisma.InputJsonValue,
+          tags: [text(first.row?.['product_tags[0]']), text(first.row?.['product_tags[1]'])].filter(Boolean),
           active: true,
         }
 
-        await this.prisma.product.upsert({ where: { sku }, create: data, update: { ...data, deletedAt: null } })
+        const product = await this.prisma.product.upsert({ where: { sku: first.sku }, create: data, update: { ...data, deletedAt: null } })
+        if (variantSkus.length > 1) {
+          await this.prisma.product.updateMany({
+            where: { sku: { in: variantSkus.filter((sku) => sku !== first.sku) }, id: { not: product.id } },
+            data: { active: false, deletedAt: new Date() },
+          })
+        }
         if (existing) updatedCount += 1
         else createdCount += 1
       } catch (error) {
-        errors.push({ rowNumber, sku: sku || null, message: error instanceof Error ? error.message : 'No se pudo guardar la fila' })
+        errors.push({ rowNumber: first.rowNumber, sku: first.sku || null, message: error instanceof Error ? error.message : 'No se pudo guardar el producto y sus variantes' })
       }
     }
 

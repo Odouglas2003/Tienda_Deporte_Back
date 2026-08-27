@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { OrderStatus } from '@prisma/client'
+import { OrderStatus, Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 
 @Injectable()
@@ -20,19 +20,42 @@ export class OrdersService {
     const ids = payload.items.map((item: any) => item.product)
     const products = await this.prisma.product.findMany({ where: { id: { in: ids }, active: true, deletedAt: null } })
     const map = new Map(products.map((product) => [product.id, product]))
+    const variantsByProduct = new Map(products.map((product) => [product.id, Array.isArray(product.variants) ? (product.variants as Array<any>).map((variant) => ({ ...variant })) : []]))
+    const requestedStock = new Map<string, number>()
     const items = payload.items.map((item: any) => {
       const product = map.get(item.product)
       const quantity = Number(item.quantity)
       if (!product) throw new NotFoundException('Uno de los productos no existe')
-      if (!Number.isInteger(quantity) || quantity < 1 || product.stock < quantity) throw new BadRequestException(`Stock insuficiente para ${product.name}`)
-      const unitPrice = user.accountType === 'mayorista' && user.approved ? product.priceWholesale : product.priceRetail
-      return { productId: product.id, productName: product.name, quantity, unitPrice, subtotal: unitPrice * quantity }
+      const totalRequested = (requestedStock.get(product.id) ?? 0) + quantity
+      if (!Number.isInteger(quantity) || quantity < 1 || product.stock < totalRequested) throw new BadRequestException(`Stock insuficiente para ${product.name}`)
+      requestedStock.set(product.id, totalRequested)
+
+      const variants = variantsByProduct.get(product.id) ?? []
+      const selectedColor = String(item.selectedColor ?? '')
+      const selectedSize = String(item.selectedSize ?? '')
+      const variantSku = String(item.variantSku ?? '')
+      const variantIndex = variants.findIndex((variant) =>
+        (variantSku ? variant.sku === variantSku : true) &&
+        (selectedColor ? variant.color === selectedColor : true) &&
+        (selectedSize ? variant.size === selectedSize : true)
+      )
+      const variant = variantIndex >= 0 ? variants[variantIndex] : null
+      if (variants.length > 0 && !variant) throw new BadRequestException(`Seleccioná una variante válida para ${product.name}`)
+      if (variant && Number(variant.stock) < quantity) throw new BadRequestException(`Stock insuficiente para ${product.name} (${selectedColor || selectedSize})`)
+      if (variant) variants[variantIndex] = { ...variant, stock: Number(variant.stock) - quantity }
+
+      const retailPrice = variant?.priceRetail ?? product.priceRetail
+      const wholesalePrice = variant?.priceWholesale ?? product.priceWholesale
+      const unitPrice = user.accountType === 'mayorista' && user.approved ? wholesalePrice : retailPrice
+      return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, quantity, unitPrice, subtotal: unitPrice * quantity }
     })
     const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
     const shippingCost = subtotal > 100000 ? 0 : 5000
     const code = `PED-${Date.now().toString().slice(-8)}`
     return this.prisma.$transaction(async (tx) => {
-      for (const item of items) await tx.product.update({ where: { id: item.productId }, data: { stock: { decrement: item.quantity } } })
+      for (const [productId, quantity] of requestedStock) {
+        await tx.product.update({ where: { id: productId }, data: { stock: { decrement: quantity }, variants: variantsByProduct.get(productId) as Prisma.InputJsonValue } })
+      }
       const order = await tx.order.create({ data: { code, userId: user.id, sellerId: user.assignedSellerId, items: { create: items }, total: subtotal + shippingCost, shippingCost, paymentMethod: payload.paymentMethod, shipping: payload.shipping ?? undefined }, include: { items: true } })
       await tx.activityLog.create({ data: { userId: user.id, action: 'Creacion de pedido', entity: 'order', metadata: { orderId: order.id, code } } })
       return order

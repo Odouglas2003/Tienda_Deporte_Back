@@ -82,11 +82,12 @@ model Product {
   priceRetail    Float
   priceWholesale Float
   tax            Float       @default(0)
-    stock          Int         @default(0)
-    images         String[]
-    colors         String[]    @default([])
-    sizes          String[]    @default([])
-    tags           String[]
+  stock          Int         @default(0)
+  images         String[]
+  colors         String[]    @default([])
+  sizes          String[]    @default([])
+  variants       Json        @default("[]")
+  tags           String[]
   featured       Boolean     @default(false)
   discount       Float       @default(0)
   newArrival     Boolean     @default(false)
@@ -140,6 +141,9 @@ model OrderItem {
   productId  String
   product    Product @relation(fields: [productId], references: [id])
   productName String
+  variantSku  String  @default("")
+  selectedColor String @default("")
+  selectedSize String @default("")
   quantity   Int
   unitPrice  Float
   subtotal   Float

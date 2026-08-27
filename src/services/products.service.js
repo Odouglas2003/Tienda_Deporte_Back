@@ -3,12 +3,43 @@ const Order = require('../models/Order')
 const ApiError = require('../utils/ApiError')
 const { ensureCategoryExists } = require('./categories.service')
 
+const COLOR_PATTERN = /\b(azul\s+marino|negro|negra|blanco|blanca|azul|verde|rojo|roja|gris|amarillo|amarilla|naranja|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo)\b/i
+const SIZE_PATTERN = /\b(XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
+const LABELED_SIZE_PATTERN = /\btalle\s*(\d{1,3}|XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
+
 function stringValue(value) {
   if (value === undefined || value === null) {
     return ''
   }
 
   return String(value).trim()
+}
+
+function titleCase(value) {
+  return stringValue(value).toLowerCase().replace(/(^|\s)\p{L}/gu, (letter) => letter.toUpperCase())
+}
+
+function extractVariantValue(row, field) {
+  const explicit = stringValue(field === 'color' ? row.color : row.size || row.talle)
+  if (explicit) return titleCase(explicit)
+  const title = stringValue(row.title || row.name)
+  const match = field === 'color' ? title.match(COLOR_PATTERN) : title.match(LABELED_SIZE_PATTERN) || title.match(SIZE_PATTERN)
+  return match ? titleCase(match[1]) : ''
+}
+
+function baseProductName(row) {
+  let name = stringValue(row.title || row.name)
+  const color = extractVariantValue(row, 'color')
+  const size = extractVariantValue(row, 'size')
+  if (color) name = name.replace(new RegExp(`\\b${color.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
+  if (size) name = name.replace(new RegExp(`\\b(?:talle\\s*)?${size.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
+  return name.replace(/\s*[-|/]\s*/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function variantGroupKey(row) {
+  return [row.category || row.google_product_category || row.fb_product_category, row.brand, baseProductName(row)]
+    .map((value) => stringValue(value).toLowerCase())
+    .join('|')
 }
 
 function parseSpreadsheetNumber(value) {
@@ -451,21 +482,49 @@ async function importProductsFromCatalog(rows = []) {
   let skippedCount = 0
   const errors = []
 
+  const validRows = []
   for (const row of normalizedRows) {
-    try {
-      const sku = stringValue(row.values.id || row.values.sku)
-      const existingProduct = existingBySku.get(sku)
-      const payload = buildCatalogProductPayload(row.values, existingProduct)
-      const validationError = validateCatalogProductPayload(payload)
+    const sku = stringValue(row.values.id || row.values.sku)
+    const existingProduct = existingBySku.get(sku)
+    const payload = buildCatalogProductPayload(row.values, existingProduct)
+    const validationError = validateCatalogProductPayload(payload)
+    if (validationError) {
+      skippedCount += 1
+      errors.push({ rowNumber: row.rowNumber, sku: payload.sku || sku || null, message: validationError })
+    } else {
+      validRows.push({ ...row, payload })
+    }
+  }
 
-      if (validationError) {
-        skippedCount += 1
-        errors.push({
-          rowNumber: row.rowNumber,
-          sku: payload.sku || sku || null,
-          message: validationError,
-        })
-        continue
+  const groups = new Map()
+  for (const row of validRows) {
+    const key = variantGroupKey(row.values)
+    groups.set(key, [...(groups.get(key) || []), row])
+  }
+
+  for (const group of groups.values()) {
+    const row = group[0]
+    try {
+      const existingProduct = existingBySku.get(row.payload.sku)
+      const variants = group.map((item) => ({
+        sku: item.payload.sku,
+        color: extractVariantValue(item.values, 'color'),
+        size: extractVariantValue(item.values, 'size'),
+        image: item.payload.images[0] || '',
+        stock: item.payload.stock,
+        priceRetail: item.payload.priceRetail,
+        priceWholesale: item.payload.priceWholesale,
+      }))
+      const payload = {
+        ...row.payload,
+        name: baseProductName(row.values) || row.payload.name,
+        images: absoluteArray(variants.map((variant) => variant.image)),
+        colors: absoluteArray(variants.map((variant) => variant.color)),
+        sizes: absoluteArray(variants.map((variant) => variant.size)),
+        variants,
+        stock: variants.reduce((total, variant) => total + variant.stock, 0),
+        priceRetail: Math.min(...variants.map((variant) => variant.priceRetail)),
+        priceWholesale: Math.min(...variants.map((variant) => variant.priceWholesale)),
       }
 
       const normalizedCategories = normalizeProductCategories(payload, payload.category)
@@ -499,6 +558,8 @@ async function importProductsFromCatalog(rows = []) {
       }
 
       existingBySku.set(savedProduct.sku, savedProduct)
+      const duplicateSkus = group.map((item) => item.payload.sku).filter((sku) => sku !== savedProduct.sku)
+      if (duplicateSkus.length > 0) await Product.updateMany({ sku: { $in: duplicateSkus } }, { active: false, deletedAt: new Date() })
     } catch (error) {
       skippedCount += 1
       errors.push({
