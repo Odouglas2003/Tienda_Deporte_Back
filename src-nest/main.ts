@@ -1,9 +1,11 @@
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import { json } from 'express'
 import { AppModule } from './app.module'
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule)
+  const app = await NestFactory.create(AppModule, { bodyParser: false })
+  app.use(json({ limit: '25mb' }))
   app.setGlobalPrefix('api')
   const configuredOrigins = (process.env.CLIENT_URL || 'http://localhost:3000')
     .split(',')
