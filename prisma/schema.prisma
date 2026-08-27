@@ -143,7 +143,8 @@ model OrderItem {
   productName String
   variantSku  String  @default("")
   selectedColor String @default("")
-  selectedSize String @default("")
+    selectedSize String @default("")
+    selectedGender String @default("")
   quantity   Int
   unitPrice  Float
   subtotal   Float

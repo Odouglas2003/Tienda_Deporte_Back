@@ -3,9 +3,10 @@ const Order = require('../models/Order')
 const ApiError = require('../utils/ApiError')
 const { ensureCategoryExists } = require('./categories.service')
 
-const COLOR_PATTERN = /\b(azul\s+marino|negro|negra|blanco|blanca|azul|verde|rojo|roja|gris|amarillo|amarilla|naranja|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo)\b/i
+const COLOR_PATTERN_SOURCE = '\\b(azul\\s+marino|negro|negra|neg|blanco|blanca|bco|azul|verde|ver|rojo|roja|roj|gris|amarillo|amarilla|naranja|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo|dorado|dorada|dor|plateado|plateada|turquesa)\\b'
 const SIZE_PATTERN = /\b(XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
 const LABELED_SIZE_PATTERN = /\btalle\s*(\d{1,3}|XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
+const GENDER_PATTERN = /\b(masculino|femenino|unisex|hombre|mujer)\b/i
 
 function stringValue(value) {
   if (value === undefined || value === null) {
@@ -19,19 +20,43 @@ function titleCase(value) {
   return stringValue(value).toLowerCase().replace(/(^|\s)\p{L}/gu, (letter) => letter.toUpperCase())
 }
 
+function normalizeColor(value) {
+  const normalized = stringValue(value).toLowerCase()
+  if (['negro', 'negra', 'neg'].includes(normalized)) return 'Negro'
+  if (['blanco', 'blanca', 'bco'].includes(normalized)) return 'Blanco'
+  if (['verde', 'ver'].includes(normalized)) return 'Verde'
+  if (['rojo', 'roja', 'roj'].includes(normalized)) return 'Rojo'
+  if (['dorado', 'dorada', 'dor'].includes(normalized)) return 'Dorado'
+  if (['plateado', 'plateada'].includes(normalized)) return 'Plateado'
+  if (['amarillo', 'amarilla'].includes(normalized)) return 'Amarillo'
+  if (['morado', 'morada'].includes(normalized)) return 'Morado'
+  return titleCase(value)
+}
+
 function extractVariantValue(row, field) {
-  const explicit = stringValue(field === 'color' ? row.color : row.size || row.talle)
-  if (explicit) return titleCase(explicit)
+  const explicit = stringValue(field === 'color' ? row.color : field === 'size' ? row.size || row.talle : row.gender || row.genero)
   const title = stringValue(row.title || row.name)
-  const match = field === 'color' ? title.match(COLOR_PATTERN) : title.match(LABELED_SIZE_PATTERN) || title.match(SIZE_PATTERN)
-  return match ? titleCase(match[1]) : ''
+  if (field === 'color') {
+    const colors = Array.from((explicit || title).matchAll(new RegExp(COLOR_PATTERN_SOURCE, 'gi')), (match) => normalizeColor(match[1]))
+    return colors.length ? [...new Set(colors)].join(' / ') : explicit ? titleCase(explicit) : ''
+  }
+  if (field === 'gender') {
+    const match = (explicit || title).match(GENDER_PATTERN)
+    if (!match) return explicit ? titleCase(explicit) : ''
+    if (/^hombre$/i.test(match[1])) return 'Masculino'
+    if (/^mujer$/i.test(match[1])) return 'Femenino'
+    return titleCase(match[1])
+  }
+  if (explicit) return /^[a-z]+$/i.test(explicit) ? explicit.toUpperCase() : explicit
+  const match = title.match(LABELED_SIZE_PATTERN) || title.match(SIZE_PATTERN)
+  return match ? (/^[a-z]+$/i.test(match[1]) ? match[1].toUpperCase() : match[1]) : ''
 }
 
 function baseProductName(row) {
   let name = stringValue(row.title || row.name)
-  const color = extractVariantValue(row, 'color')
   const size = extractVariantValue(row, 'size')
-  if (color) name = name.replace(new RegExp(`\\b${color.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
+  name = name.replace(new RegExp(COLOR_PATTERN_SOURCE, 'gi'), ' ')
+  name = name.replace(GENDER_PATTERN, ' ')
   if (size) name = name.replace(new RegExp(`\\b(?:talle\\s*)?${size.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
   return name.replace(/\s*[-|/]\s*/g, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -510,6 +535,7 @@ async function importProductsFromCatalog(rows = []) {
         sku: item.payload.sku,
         color: extractVariantValue(item.values, 'color'),
         size: extractVariantValue(item.values, 'size'),
+        gender: extractVariantValue(item.values, 'gender'),
         image: item.payload.images[0] || '',
         stock: item.payload.stock,
         priceRetail: item.payload.priceRetail,

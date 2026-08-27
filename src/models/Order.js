@@ -7,6 +7,7 @@ const orderItemSchema = new mongoose.Schema(
     variantSku: { type: String, default: '' },
     selectedColor: { type: String, default: '' },
     selectedSize: { type: String, default: '' },
+    selectedGender: { type: String, default: '' },
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     subtotal: { type: Number, required: true, min: 0 },

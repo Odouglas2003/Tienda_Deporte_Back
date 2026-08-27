@@ -33,11 +33,13 @@ export class OrdersService {
       const variants = variantsByProduct.get(product.id) ?? []
       const selectedColor = String(item.selectedColor ?? '')
       const selectedSize = String(item.selectedSize ?? '')
+      const selectedGender = String(item.selectedGender ?? '')
       const variantSku = String(item.variantSku ?? '')
       const variantIndex = variants.findIndex((variant) =>
         (variantSku ? variant.sku === variantSku : true) &&
         (selectedColor ? variant.color === selectedColor : true) &&
         (selectedSize ? variant.size === selectedSize : true)
+        && (selectedGender ? variant.gender === selectedGender : true)
       )
       const variant = variantIndex >= 0 ? variants[variantIndex] : null
       if (variants.length > 0 && !variant) throw new BadRequestException(`Seleccioná una variante válida para ${product.name}`)
@@ -47,7 +49,7 @@ export class OrdersService {
       const retailPrice = variant?.priceRetail ?? product.priceRetail
       const wholesalePrice = variant?.priceWholesale ?? product.priceWholesale
       const unitPrice = user.accountType === 'mayorista' && user.approved ? wholesalePrice : retailPrice
-      return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, quantity, unitPrice, subtotal: unitPrice * quantity }
+      return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, selectedGender, quantity, unitPrice, subtotal: unitPrice * quantity }
     })
     const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
     const shippingCost = subtotal > 100000 ? 0 : 5000
