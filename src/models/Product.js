@@ -14,6 +14,8 @@ const productSchema = new mongoose.Schema(
     tax: { type: Number, default: 0, min: 0 },
     stock: { type: Number, default: 0, min: 0 },
     images: [{ type: String }],
+    colors: [{ type: String, trim: true }],
+    sizes: [{ type: String, trim: true }],
     tags: [{ type: String, trim: true }],
     featured: { type: Boolean, default: false },
     discount: { type: Number, default: 0, min: 0, max: 100 },

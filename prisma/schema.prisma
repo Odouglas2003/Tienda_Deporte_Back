@@ -82,9 +82,11 @@ model Product {
   priceRetail    Float
   priceWholesale Float
   tax            Float       @default(0)
-  stock          Int         @default(0)
-  images         String[]
-  tags           String[]
+    stock          Int         @default(0)
+    images         String[]
+    colors         String[]    @default([])
+    sizes          String[]    @default([])
+    tags           String[]
   featured       Boolean     @default(false)
   discount       Float       @default(0)
   newArrival     Boolean     @default(false)

@@ -167,6 +167,7 @@ function buildCatalogProductPayload(row, existingProduct) {
 
   const quantity =
     parseSpreadsheetNumber(row.stock || row.quantity_to_sell_on_facebook || existingProduct?.stock) ??
+    (/^(in stock|disponible|si|sí)$/i.test(stringValue(row.availability)) ? 1 : null) ??
     existingProduct?.stock ??
     0
   const tax =
@@ -193,6 +194,8 @@ function buildCatalogProductPayload(row, existingProduct) {
 
   const imageLink = stringValue(row.image_link || row.image || existingProduct?.images?.[0])
   const images = imageLink ? [imageLink] : existingProduct?.images ?? []
+  const colors = absoluteArray([stringValue(row.color), ...(existingProduct?.colors ?? [])])
+  const sizes = absoluteArray([stringValue(row.size || row.talle), ...(existingProduct?.sizes ?? [])])
   const tags = absoluteArray([
     stringValue(row['product_tags[0]']),
     stringValue(row['product_tags[1]']),
@@ -217,6 +220,8 @@ function buildCatalogProductPayload(row, existingProduct) {
     featured,
     discount,
     images,
+    colors,
+    sizes,
     tags,
   }
 }

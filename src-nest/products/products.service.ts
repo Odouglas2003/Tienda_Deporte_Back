@@ -79,6 +79,8 @@ export class ProductsService {
       try {
         const existing = await this.prisma.product.findUnique({ where: { sku } })
         const categories = Array.from(new Set([category, ...(Array.isArray(row?.categories) ? row.categories : [])].map(text).filter(Boolean)))
+        const colors = [text(row?.color)].filter(Boolean)
+        const sizes = [text(row?.size || row?.talle)].filter(Boolean)
         const data = {
           sku,
           name,
@@ -89,9 +91,11 @@ export class ProductsService {
           brand: text(row?.brand),
           priceRetail: retail,
           priceWholesale: wholesale,
-          stock: Math.max(0, Math.round(number(row?.stock ?? row?.quantity_to_sell_on_facebook) ?? 0)),
+          stock: Math.max(0, Math.round(number(row?.stock ?? row?.quantity_to_sell_on_facebook) ?? (/^(in stock|disponible|si|sí)$/i.test(text(row?.availability)) ? 1 : 0))),
           tax: number(row?.tax) ?? 0,
           images: text(row?.image_link || row?.image) ? [text(row?.image_link || row?.image)] : [],
+          colors,
+          sizes,
           tags: [text(row?.['product_tags[0]']), text(row?.['product_tags[1]'])].filter(Boolean),
           active: true,
         }
