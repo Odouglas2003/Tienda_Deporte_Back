@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 
-const COLOR_PATTERN_SOURCE = '\\b(azul\\s+marino|negro|negra|neg|blanco|blanca|bco|azul|verde|ver|rojo|roja|roj|gris|amarillo|amarilla|naranja|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo|dorado|dorada|dor|plateado|plateada|turquesa)\\b'
+const COLOR_PATTERN_SOURCE = '\\b(azul\\s+marino|multicolor|multi|negro|negra|neg|blanco|blanca|bco|azul|verde|ver|rojo|roja|roj|gris|amarillo|amarilla|amar|naranja|nar|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo|dorado|dorada|dor|plateado|plateada|turquesa)\\b'
 const SIZE_PATTERN = /\b(XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
 const LABELED_SIZE_PATTERN = /\btalle\s*(\d{1,3}|XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
 const GENDER_PATTERN = /\b(masculino|femenino|unisex|hombre|mujer)\b/i
@@ -24,6 +24,9 @@ function normalizeColor(value: string) {
   if (['dorado', 'dorada', 'dor'].includes(normalized)) return 'Dorado'
   if (['plateado', 'plateada'].includes(normalized)) return 'Plateado'
   if (['amarillo', 'amarilla'].includes(normalized)) return 'Amarillo'
+  if (normalized === 'amar') return 'Amarillo'
+  if (['naranja', 'nar'].includes(normalized)) return 'Naranja'
+  if (['multicolor', 'multi'].includes(normalized)) return 'Multicolor'
   if (['morado', 'morada'].includes(normalized)) return 'Morado'
   return titleCase(value)
 }
@@ -169,7 +172,7 @@ export class ProductsService {
           priceRetail: item.priceRetail,
           priceWholesale: item.priceWholesale,
         }))
-        const colors = Array.from(new Set(variants.map((variant) => variant.color).filter(Boolean)))
+        const colors = Array.from(new Set(variants.flatMap((variant) => variant.color.split('/').map((color) => color.trim()).filter(Boolean))))
         const sizes = Array.from(new Set(variants.map((variant) => variant.size).filter(Boolean)))
         const images = Array.from(new Set(variants.map((variant) => variant.image).filter(Boolean)))
         const data = {

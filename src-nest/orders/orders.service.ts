@@ -37,7 +37,7 @@ export class OrdersService {
       const variantSku = String(item.variantSku ?? '')
       const variantIndex = variants.findIndex((variant) =>
         (variantSku ? variant.sku === variantSku : true) &&
-        (selectedColor ? variant.color === selectedColor : true) &&
+        (selectedColor ? String(variant.color ?? '').split('/').map((color) => color.trim()).includes(selectedColor) : true) &&
         (selectedSize ? variant.size === selectedSize : true)
         && (selectedGender ? variant.gender === selectedGender : true)
       )
