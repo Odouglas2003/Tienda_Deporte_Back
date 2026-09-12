@@ -232,7 +232,7 @@ async function seedSettings() {
       minWholesaleOrder: 150000,
       taxPercentage: 21,
       paymentMethods: ['transferencia', 'efectivo', 'cheque electronico'],
-      whatsappNumber: '5491112345678',
+      whatsappNumber: '5493513892528',
       automaticMessages: {
         wholesaleApproved: 'Tu cuenta mayorista fue aprobada. Ya podes ingresar al catalogo.',
         orderCreated: 'Recibimos tu pedido y lo estamos revisando.',
