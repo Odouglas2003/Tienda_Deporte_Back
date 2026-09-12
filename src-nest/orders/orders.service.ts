@@ -17,6 +17,16 @@ export class OrdersService {
     const user = await this.prisma.user.findUnique({ where: { id: auth.sub } })
     if (!user) throw new NotFoundException('Usuario no encontrado')
     if (!Array.isArray(payload.items) || !payload.items.length) throw new BadRequestException('El pedido debe tener productos')
+    if (!String(payload.paymentMethod ?? '').trim()) throw new BadRequestException('Seleccioná un medio de pago')
+
+    const shipping = payload.shipping && typeof payload.shipping === 'object' ? payload.shipping : {}
+    const missingShippingFields = [
+      !String(shipping.address ?? '').trim() && 'dirección',
+      !String(shipping.city ?? '').trim() && 'ciudad',
+      !String(shipping.postalCode ?? '').trim() && 'código postal',
+      !String(shipping.phone ?? '').trim() && 'teléfono',
+    ].filter(Boolean)
+    if (missingShippingFields.length) throw new BadRequestException(`Faltan datos de envío: ${missingShippingFields.join(', ')}`)
     const ids = payload.items.map((item: any) => item.product)
     const products = await this.prisma.product.findMany({ where: { id: { in: ids }, active: true, deletedAt: null } })
     const map = new Map(products.map((product) => [product.id, product]))
@@ -52,13 +62,26 @@ export class OrdersService {
       return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, selectedGender, quantity, unitPrice, subtotal: unitPrice * quantity }
     })
     const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
+    const settings = await this.prisma.settings.findFirst()
+    if (user.accountType === 'mayorista' && user.approved && settings?.minWholesaleOrder && subtotal < settings.minWholesaleOrder) {
+      throw new BadRequestException(`El pedido mayorista mínimo es de $${settings.minWholesaleOrder.toLocaleString('es-AR')}`)
+    }
     const shippingCost = subtotal > 100000 ? 0 : 5000
-    const code = `PED-${Date.now().toString().slice(-8)}`
+    const now = new Date()
+    const datePart = now.toISOString().slice(0, 10).replaceAll('-', '')
+    const code = `PED-${datePart}-${now.getTime().toString().slice(-6)}`
     return this.prisma.$transaction(async (tx) => {
       for (const [productId, quantity] of requestedStock) {
         await tx.product.update({ where: { id: productId }, data: { stock: { decrement: quantity }, variants: variantsByProduct.get(productId) as Prisma.InputJsonValue } })
       }
-      const order = await tx.order.create({ data: { code, userId: user.id, sellerId: user.assignedSellerId, items: { create: items }, total: subtotal + shippingCost, shippingCost, paymentMethod: payload.paymentMethod, shipping: payload.shipping ?? undefined }, include: { items: true } })
+      const order = await tx.order.create({
+        data: { code, userId: user.id, sellerId: user.assignedSellerId, items: { create: items }, total: subtotal + shippingCost, shippingCost, paymentMethod: payload.paymentMethod, shipping },
+        include: {
+          user: { select: { id: true, name: true, email: true, accountType: true } },
+          seller: { select: { id: true, name: true } },
+          items: true,
+        },
+      })
       await tx.activityLog.create({ data: { userId: user.id, action: 'Creacion de pedido', entity: 'order', metadata: { orderId: order.id, code } } })
       return order
     })
@@ -68,7 +91,15 @@ export class OrdersService {
     const exists = await this.prisma.order.findUnique({ where: { id } })
     if (!exists) throw new NotFoundException('Pedido no encontrado')
     const mapped = status.replace(' ', '_') as OrderStatus
-    const order = await this.prisma.order.update({ where: { id }, data: { status: mapped } })
+    const order = await this.prisma.order.update({
+      where: { id },
+      data: { status: mapped },
+      include: {
+        user: { select: { id: true, name: true, email: true, accountType: true } },
+        seller: { select: { id: true, name: true } },
+        items: true,
+      },
+    })
     await this.prisma.activityLog.create({ data: { userId: actorId, action: 'Cambio de estado de pedido', entity: 'order', metadata: { orderId: id, status } } })
     return order
   }
