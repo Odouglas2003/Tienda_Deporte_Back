@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
 import { OrderStatus, Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
+import { AuthService } from '../auth/auth.service'
+import * as bcrypt from 'bcryptjs'
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly auth: AuthService) {}
 
   list(auth: any) {
     const where: any = { deletedAt: null }
@@ -13,9 +15,20 @@ export class OrdersService {
     return this.prisma.order.findMany({ where, include: { user: { select: { id: true, name: true, email: true, accountType: true } }, seller: { select: { id: true, name: true } }, items: true }, orderBy: { createdAt: 'desc' } })
   }
 
-  async create(auth: any, payload: any) {
-    const user = await this.prisma.user.findUnique({ where: { id: auth.sub } })
-    if (!user) throw new NotFoundException('Usuario no encontrado')
+  async create(auth: any | null, payload: any) {
+    const user = auth ? await this.prisma.user.findUnique({ where: { id: auth.sub } }) : null
+    if (auth && !user) throw new NotFoundException('Usuario no encontrado')
+    const customer = payload.customer && typeof payload.customer === 'object' ? payload.customer : {}
+    const firstName = String(customer.firstName ?? '').trim()
+    const lastName = String(customer.lastName ?? '').trim()
+    const email = String(customer.email ?? '').trim().toLowerCase()
+    if (!auth && (!firstName || !lastName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      throw new BadRequestException('Completá nombre, apellido y un email válido')
+    }
+    const createAccount = !auth && customer.createAccount === true
+    const password = String(customer.password ?? '')
+    if (createAccount && password.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
+    if (createAccount && await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado. Iniciá sesión para comprar con tu cuenta.')
     if (!Array.isArray(payload.items) || !payload.items.length) throw new BadRequestException('El pedido debe tener productos')
     if (!String(payload.paymentMethod ?? '').trim()) throw new BadRequestException('Seleccioná un medio de pago')
 
@@ -58,33 +71,38 @@ export class OrdersService {
 
       const retailPrice = variant?.priceRetail ?? product.priceRetail
       const wholesalePrice = variant?.priceWholesale ?? product.priceWholesale
-      const unitPrice = user.accountType === 'mayorista' && user.approved ? wholesalePrice : retailPrice
+      const unitPrice = user?.accountType === 'mayorista' && user.approved ? wholesalePrice : retailPrice
       return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, selectedGender, quantity, unitPrice, subtotal: unitPrice * quantity }
     })
     const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
     const settings = await this.prisma.settings.findFirst()
-    if (user.accountType === 'mayorista' && user.approved && settings?.minWholesaleOrder && subtotal < settings.minWholesaleOrder) {
+    if (user?.accountType === 'mayorista' && user.approved && settings?.minWholesaleOrder && subtotal < settings.minWholesaleOrder) {
       throw new BadRequestException(`El pedido mayorista mínimo es de $${settings.minWholesaleOrder.toLocaleString('es-AR')}`)
     }
     const shippingCost = subtotal > 100000 ? 0 : 5000
     const now = new Date()
     const datePart = now.toISOString().slice(0, 10).replaceAll('-', '')
     const code = `PED-${datePart}-${now.getTime().toString().slice(-6)}`
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const account = createAccount ? await tx.user.create({ data: {
+        name: `${firstName} ${lastName}`, email, phone: String(shipping.phone).trim(),
+        password: await bcrypt.hash(password, 10), role: 'cliente', accountType: 'minorista', approved: true, approvalStatus: 'approved',
+      } }) : null
       for (const [productId, quantity] of requestedStock) {
         await tx.product.update({ where: { id: productId }, data: { stock: { decrement: quantity }, variants: variantsByProduct.get(productId) as Prisma.InputJsonValue } })
       }
       const order = await tx.order.create({
-        data: { code, userId: user.id, sellerId: user.assignedSellerId, items: { create: items }, total: subtotal + shippingCost, shippingCost, paymentMethod: payload.paymentMethod, shipping },
+        data: { code, userId: user?.id ?? account?.id, customerName: user?.name ?? `${firstName} ${lastName}`, customerEmail: user?.email ?? email, sellerId: user?.assignedSellerId, items: { create: items }, total: subtotal + shippingCost, shippingCost, paymentMethod: payload.paymentMethod, shipping },
         include: {
           user: { select: { id: true, name: true, email: true, accountType: true } },
           seller: { select: { id: true, name: true } },
           items: true,
         },
       })
-      await tx.activityLog.create({ data: { userId: user.id, action: 'Creacion de pedido', entity: 'order', metadata: { orderId: order.id, code } } })
-      return order
+      await tx.activityLog.create({ data: { userId: user?.id ?? account?.id, action: 'Creacion de pedido', entity: 'order', metadata: { orderId: order.id, code } } })
+      return { order, account }
     })
+    return result.account ? { order: result.order, session: this.auth.createSession(result.account) } : { order: result.order }
   }
 
   async updateStatus(id: string, status: string, actorId: string) {

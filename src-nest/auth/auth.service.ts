@@ -21,6 +21,10 @@ export class AuthService {
     return this.jwt.sign({ sub: user.id, role: user.role, email: user.email })
   }
 
+  createSession(user: User) {
+    return { user: this.serialize(user), token: this.token(user) }
+  }
+
   async login(email: string, password: string) {
     const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() }, include: { assignedSeller: { select: { name: true } } } })
     if (!user || !(await bcrypt.compare(password, user.password))) throw new UnauthorizedException('Credenciales invalidas')

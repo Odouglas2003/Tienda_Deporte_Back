@@ -115,8 +115,10 @@ model Category {
 model Order {
   id           String      @id @default(cuid())
   code         String      @unique @default(cuid())
-  userId       String
-  user         User        @relation("CustomerOrders", fields: [userId], references: [id])
+  userId       String?
+  user         User?       @relation("CustomerOrders", fields: [userId], references: [id])
+  customerName String      @default("")
+  customerEmail String     @default("")
   sellerId     String?
   seller       User?       @relation("SellerOrders", fields: [sellerId], references: [id])
   items        OrderItem[]

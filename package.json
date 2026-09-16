@@ -7,7 +7,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "dev:nest": "nest start --watch",
-    "start:nest": "node dist-nest/main.js",
+    "start:nest": "prisma migrate deploy && node dist-nest/main.js",
     "build:nest": "nest build",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
