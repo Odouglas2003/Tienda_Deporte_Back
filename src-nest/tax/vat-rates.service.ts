@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
+import { PrismaService } from '../prisma.service'
 
 type RateSource = 'api' | 'stale' | 'fallback'
 export type GeneralVatRate = { rate: number; source: RateSource; checkedAt?: string }
@@ -31,37 +32,70 @@ export function productVatRate(storedRate: number, generalRate: number) {
 export class VatRatesService {
   private readonly logger = new Logger(VatRatesService.name)
   private cached: { rate: number; checkedAt: number } | null = null
-  private pending: Promise<number> | null = null
+  private pending: Promise<GeneralVatRate> | null = null
   private lastAttemptAt = 0
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, private readonly prisma: PrismaService) {}
 
   async getGeneralRate(configuredRate: number): Promise<GeneralVatRate> {
     const fallback = Number.isFinite(configuredRate) && configuredRate > 0 ? configuredRate : 21
     const key = this.config.get<string>('VATSENSE_API_KEY')?.trim()
     if (!key) return { rate: fallback, source: 'fallback' }
 
-    const now = Date.now()
-    if (this.cached && now - this.cached.checkedAt < REFRESH_MS) {
+    if (this.cached && Date.now() - this.cached.checkedAt < REFRESH_MS) {
       return { rate: this.cached.rate, source: 'api', checkedAt: new Date(this.cached.checkedAt).toISOString() }
     }
+    if (!this.pending) this.pending = this.loadOrRefresh(key, fallback).finally(() => { this.pending = null })
+    return this.pending
+  }
 
-    if (now - this.lastAttemptAt >= RETRY_MS || this.pending) {
-      if (!this.pending) {
-        this.lastAttemptAt = now
-        this.pending = this.fetchRate(key).finally(() => { this.pending = null })
-      }
+  private async loadOrRefresh(key: string, fallback: number): Promise<GeneralVatRate> {
+    let settings: Awaited<ReturnType<typeof this.prisma.settings.findFirst>> = null
+    try {
+      settings = await this.prisma.settings.findFirst()
+    } catch (error) {
+      this.logger.warn(`No se pudo leer la caché del IVA: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    const savedRate = numericRate(settings?.vatRateCached)
+    const savedAt = settings?.vatRateCheckedAt?.getTime()
+    if (savedRate !== null && savedAt && Number.isFinite(savedAt)) {
+      this.cached = { rate: savedRate, checkedAt: savedAt }
+    }
+
+    const now = Date.now()
+    const stale: GeneralVatRate = this.cached
+      ? { rate: this.cached.rate, source: 'stale', checkedAt: new Date(this.cached.checkedAt).toISOString() }
+      : { rate: fallback, source: 'fallback' }
+    if (this.cached && now - this.cached.checkedAt < REFRESH_MS) return { ...stale, source: 'api' }
+
+    const lastAttemptAt = Math.max(this.lastAttemptAt, settings?.vatRateAttemptedAt?.getTime() ?? 0)
+    if (now - lastAttemptAt < RETRY_MS) return stale
+    this.lastAttemptAt = now
+    if (settings) {
       try {
-        const rate = await this.pending
-        this.cached = { rate, checkedAt: Date.now() }
-        return { rate, source: 'api', checkedAt: new Date(this.cached.checkedAt).toISOString() }
+        await this.prisma.settings.update({ where: { id: settings.id }, data: { vatRateAttemptedAt: new Date(now) } })
       } catch (error) {
-        this.logger.warn(`No se pudo actualizar el IVA: ${error instanceof Error ? error.message : String(error)}`)
+        this.logger.warn(`No se pudo guardar el intento de consulta del IVA: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
 
-    if (this.cached) return { rate: this.cached.rate, source: 'stale', checkedAt: new Date(this.cached.checkedAt).toISOString() }
-    return { rate: fallback, source: 'fallback' }
+    try {
+      const rate = await this.fetchRate(key)
+      const checkedAt = new Date()
+      this.cached = { rate, checkedAt: checkedAt.getTime() }
+      if (settings) {
+        try {
+          await this.prisma.settings.update({ where: { id: settings.id }, data: { vatRateCached: rate, vatRateCheckedAt: checkedAt } })
+        } catch (error) {
+          this.logger.warn(`No se pudo guardar la tasa de IVA: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      return { rate, source: 'api', checkedAt: checkedAt.toISOString() }
+    } catch (error) {
+      this.logger.warn(`No se pudo actualizar el IVA: ${error instanceof Error ? error.message : String(error)}`)
+      return stale
+    }
   }
 
   private async fetchRate(key: string) {

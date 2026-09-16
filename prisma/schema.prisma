@@ -168,6 +168,9 @@ model Settings {
   id                String   @id @default(cuid())
   minWholesaleOrder Float    @default(0)
   taxPercentage     Float    @default(0)
+  vatRateCached     Float?
+  vatRateCheckedAt  DateTime?
+  vatRateAttemptedAt DateTime?
   paymentMethods    String[]
   whatsappNumber    String   @default("")
   automaticMessages Json?
