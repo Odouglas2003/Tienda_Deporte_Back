@@ -2,6 +2,7 @@ const Order = require('../models/Order')
 const mongoose = require('mongoose')
 const User = require('../models/User')
 const Product = require('../models/Product')
+const Settings = require('../models/Settings')
 const ApiError = require('../utils/ApiError')
 const { createLog } = require('./activityLogs.service')
 
@@ -65,9 +66,11 @@ async function createOrder(payload) {
           throw new ApiError(400, `Stock insuficiente para ${product.name}${variant ? ` (${variantSku})` : ''}`)
         }
 
-        const unitPrice = useWholesalePrice
+        const basePrice = useWholesalePrice
           ? (variant?.priceWholesale ?? product.priceWholesale)
           : (variant?.priceRetail ?? product.priceRetail)
+        const discount = useWholesalePrice ? 0 : Math.min(100, Math.max(0, Number(product.discount) || 0))
+        const unitPrice = Math.round(basePrice * (1 - discount / 100) * 100) / 100
 
         return {
           product: product._id,
@@ -99,12 +102,18 @@ async function createOrder(payload) {
       }
 
       const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0)
-      const shippingCost = subtotal > 100000 ? 0 : 5000
+      const settings = await Settings.findOne().session(session)
+      const generalRate = Number(settings?.taxPercentage) > 0 ? Number(settings.taxPercentage) : 21
+      const taxAmount = items.reduce((sum, item) => {
+        const rate = Number(productMap.get(item.product.toString())?.tax)
+        return sum + Math.round(item.subtotal * (rate > 0 ? rate : generalRate)) / 100
+      }, 0)
       ;[order] = await Order.create([{
         user: user._id,
         items,
-        total: subtotal + shippingCost,
-        shippingCost,
+        total: subtotal + taxAmount,
+        shippingCost: 0,
+        taxAmount,
         paymentMethod: payload.paymentMethod,
         shipping: payload.shipping || {},
         seller: user.assignedSeller || null,

@@ -124,6 +124,7 @@ model Order {
   items        OrderItem[]
   total        Float
   shippingCost Float       @default(0)
+  taxAmount    Float       @default(0)
   paymentMethod String
   status       OrderStatus @default(pendiente)
   shipping     Json?

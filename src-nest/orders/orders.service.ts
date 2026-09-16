@@ -71,7 +71,11 @@ export class OrdersService {
 
       const retailPrice = variant?.priceRetail ?? product.priceRetail
       const wholesalePrice = variant?.priceWholesale ?? product.priceWholesale
-      const unitPrice = user?.accountType === 'mayorista' && user.approved ? wholesalePrice : retailPrice
+      const discount = Number(product.discount)
+      const retailDiscount = Number.isFinite(discount) ? Math.min(100, Math.max(0, discount)) : 0
+      const unitPrice = user?.accountType === 'mayorista' && user.approved
+        ? wholesalePrice
+        : Math.round(retailPrice * (1 - retailDiscount / 100) * 100) / 100
       return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, selectedGender, quantity, unitPrice, subtotal: unitPrice * quantity }
     })
     const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
@@ -79,7 +83,12 @@ export class OrdersService {
     if (user?.accountType === 'mayorista' && user.approved && settings?.minWholesaleOrder && subtotal < settings.minWholesaleOrder) {
       throw new BadRequestException(`El pedido mayorista mínimo es de $${settings.minWholesaleOrder.toLocaleString('es-AR')}`)
     }
-    const shippingCost = subtotal > 100000 ? 0 : 5000
+    const generalTaxRate = Number(settings?.taxPercentage) > 0 ? Number(settings?.taxPercentage) : 21
+    const taxAmount = items.reduce((sum: number, item: { productId: string; subtotal: number }) => {
+      const productRate = Number(map.get(item.productId)?.tax)
+      const rate = Number.isFinite(productRate) && productRate > 0 ? productRate : generalTaxRate
+      return sum + Math.round(item.subtotal * rate) / 100
+    }, 0)
     const now = new Date()
     const datePart = now.toISOString().slice(0, 10).replaceAll('-', '')
     const code = `PED-${datePart}-${now.getTime().toString().slice(-6)}`
@@ -92,7 +101,7 @@ export class OrdersService {
         await tx.product.update({ where: { id: productId }, data: { stock: { decrement: quantity }, variants: variantsByProduct.get(productId) as Prisma.InputJsonValue } })
       }
       const order = await tx.order.create({
-        data: { code, userId: user?.id ?? account?.id, customerName: user?.name ?? `${firstName} ${lastName}`, customerEmail: user?.email ?? email, sellerId: user?.assignedSellerId, items: { create: items }, total: subtotal + shippingCost, shippingCost, paymentMethod: payload.paymentMethod, shipping },
+        data: { code, userId: user?.id ?? account?.id, customerName: user?.name ?? `${firstName} ${lastName}`, customerEmail: user?.email ?? email, sellerId: user?.assignedSellerId, items: { create: items }, total: subtotal + taxAmount, shippingCost: 0, taxAmount, paymentMethod: payload.paymentMethod, shipping },
         include: {
           user: { select: { id: true, name: true, email: true, accountType: true } },
           seller: { select: { id: true, name: true } },

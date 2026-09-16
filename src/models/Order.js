@@ -21,6 +21,7 @@ const orderSchema = new mongoose.Schema(
     items: { type: [orderItemSchema], default: [] },
     total: { type: Number, required: true, min: 0 },
     shippingCost: { type: Number, default: 0, min: 0 },
+    taxAmount: { type: Number, default: 0, min: 0 },
     paymentMethod: { type: String, required: true },
     shipping: {
       address: { type: String, default: '' },
