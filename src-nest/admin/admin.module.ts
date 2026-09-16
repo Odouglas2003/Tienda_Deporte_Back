@@ -8,6 +8,7 @@ import { SettingsController } from './settings.controller'
 import { SettingsService } from './settings.service'
 import { ReportsController } from './reports.controller'
 import { ReportsService } from './reports.service'
+import { VatRatesModule } from '../tax/vat-rates.module'
 
-@Module({ imports: [AuthModule], controllers: [CategoriesController, ActivityController, SettingsController, ReportsController], providers: [CategoriesService, ActivityService, SettingsService, ReportsService] })
+@Module({ imports: [AuthModule, VatRatesModule], controllers: [CategoriesController, ActivityController, SettingsController, ReportsController], providers: [CategoriesService, ActivityService, SettingsService, ReportsService] })
 export class AdminModule {}

@@ -3,10 +3,11 @@ import { OrderStatus, Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 import { AuthService } from '../auth/auth.service'
 import * as bcrypt from 'bcryptjs'
+import { VatRatesService, productVatRate } from '../tax/vat-rates.service'
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService, private readonly auth: AuthService) {}
+  constructor(private readonly prisma: PrismaService, private readonly auth: AuthService, private readonly vatRates: VatRatesService) {}
 
   list(auth: any) {
     const where: any = { deletedAt: null }
@@ -83,10 +84,10 @@ export class OrdersService {
     if (user?.accountType === 'mayorista' && user.approved && settings?.minWholesaleOrder && subtotal < settings.minWholesaleOrder) {
       throw new BadRequestException(`El pedido mayorista mínimo es de $${settings.minWholesaleOrder.toLocaleString('es-AR')}`)
     }
-    const generalTaxRate = Number(settings?.taxPercentage) > 0 ? Number(settings?.taxPercentage) : 21
+    const generalTaxRate = (await this.vatRates.getGeneralRate(Number(settings?.taxPercentage))).rate
     const taxAmount = items.reduce((sum: number, item: { productId: string; subtotal: number }) => {
       const productRate = Number(map.get(item.productId)?.tax)
-      const rate = Number.isFinite(productRate) && productRate > 0 ? productRate : generalTaxRate
+      const rate = productVatRate(productRate, generalTaxRate)
       return sum + Math.round(item.subtotal * rate) / 100
     }, 0)
     const now = new Date()

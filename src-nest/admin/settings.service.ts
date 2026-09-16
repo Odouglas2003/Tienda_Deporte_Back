@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
+import { VatRatesService } from '../tax/vat-rates.service'
 
 const defaultBrands = [
   { name: 'DRIBBLING', categories: ['Futbol', 'Indumentaria', 'Fitness y yoga', 'Volley', 'Basquet', 'Handball'] },
@@ -24,19 +25,23 @@ const defaultDisciplines = [
 
 @Injectable()
 export class SettingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly vatRates: VatRatesService) {}
 
   async get() {
     const settings = await this.prisma.settings.findFirst()
     if (settings) {
+      const vat = await this.vatRates.getGeneralRate(settings.taxPercentage)
       return {
         ...settings,
+        taxPercentage: vat.rate,
+        taxRateSource: vat.source,
+        taxRateCheckedAt: vat.checkedAt,
         navigationBrands: settings.navigationBrands ?? defaultBrands,
         navigationDisciplines: settings.navigationDisciplines ?? defaultDisciplines,
       }
     }
 
-    return this.prisma.settings.create({
+    const created = await this.prisma.settings.create({
       data: {
         paymentMethods: ['transferencia'],
         automaticMessages: {},
@@ -44,6 +49,8 @@ export class SettingsService {
         navigationDisciplines: defaultDisciplines,
       },
     })
+    const vat = await this.vatRates.getGeneralRate(created.taxPercentage)
+    return { ...created, taxPercentage: vat.rate, taxRateSource: vat.source, taxRateCheckedAt: vat.checkedAt }
   }
 
   async update(body: Record<string, unknown>) {
@@ -58,14 +65,18 @@ export class SettingsService {
     if (Array.isArray(body.navigationDisciplines)) data.navigationDisciplines = body.navigationDisciplines as Prisma.InputJsonValue
 
     const current = await this.prisma.settings.findFirst()
-    if (current) return this.prisma.settings.update({ where: { id: current.id }, data })
+    if (current) {
+      await this.prisma.settings.update({ where: { id: current.id }, data })
+      return this.get()
+    }
 
-    return this.prisma.settings.create({
+    await this.prisma.settings.create({
       data: {
         paymentMethods: Array.isArray(body.paymentMethods) ? body.paymentMethods.filter((item): item is string => typeof item === 'string') : [],
         navigationBrands: (body.navigationBrands as Prisma.InputJsonValue | undefined) ?? defaultBrands,
         navigationDisciplines: (body.navigationDisciplines as Prisma.InputJsonValue | undefined) ?? defaultDisciplines,
       },
     })
+    return this.get()
   }
 }
