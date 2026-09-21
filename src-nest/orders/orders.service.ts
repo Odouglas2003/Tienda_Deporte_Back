@@ -3,7 +3,15 @@ import { OrderStatus, Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 import { AuthService } from '../auth/auth.service'
 import * as bcrypt from 'bcryptjs'
+import { buildOrderStatusEmail } from './order-approval.template'
 import { VatRatesService, productVatRate } from '../tax/vat-rates.service'
+
+const orderDetails = {
+  user: { select: { id: true, name: true, email: true, accountType: true } },
+  seller: { select: { id: true, name: true } },
+  items: { include: { product: { select: { images: true } } } },
+  emailNotifications: { select: { kind: true, status: true, sentAt: true }, orderBy: { createdAt: 'asc' } },
+} satisfies Prisma.OrderInclude
 
 @Injectable()
 export class OrdersService {
@@ -13,7 +21,7 @@ export class OrdersService {
     const where: any = { deletedAt: null }
     if (auth.role === 'cliente') where.userId = auth.sub
     if (auth.role === 'vendedor') where.sellerId = auth.sub
-    return this.prisma.order.findMany({ where, include: { user: { select: { id: true, name: true, email: true, accountType: true } }, seller: { select: { id: true, name: true } }, items: true }, orderBy: { createdAt: 'desc' } })
+    return this.prisma.order.findMany({ where, include: orderDetails, orderBy: { createdAt: 'desc' } })
   }
 
   async create(auth: any | null, payload: any) {
@@ -77,7 +85,7 @@ export class OrdersService {
       const unitPrice = user?.accountType === 'mayorista' && user.approved
         ? wholesalePrice
         : Math.round(retailPrice * (1 - retailDiscount / 100) * 100) / 100
-      return { productId: product.id, productName: product.name, variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, selectedGender, quantity, unitPrice, subtotal: unitPrice * quantity }
+      return { productId: product.id, productName: product.name, image: product.images[0] ?? '', variantSku: variant?.sku ?? variantSku, selectedColor, selectedSize, selectedGender, quantity, unitPrice, subtotal: unitPrice * quantity }
     })
     const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
     const settings = await this.prisma.settings.findFirst()
@@ -116,19 +124,28 @@ export class OrdersService {
   }
 
   async updateStatus(id: string, status: string, actorId: string) {
-    const exists = await this.prisma.order.findUnique({ where: { id } })
-    if (!exists) throw new NotFoundException('Pedido no encontrado')
-    const mapped = status.replace(' ', '_') as OrderStatus
-    const order = await this.prisma.order.update({
-      where: { id },
-      data: { status: mapped },
-      include: {
-        user: { select: { id: true, name: true, email: true, accountType: true } },
-        seller: { select: { id: true, name: true } },
-        items: true,
-      },
+    const mapped = typeof status === 'string' ? status.trim().replaceAll(' ', '_') : ''
+    if (!Object.values(OrderStatus).includes(mapped as OrderStatus)) throw new BadRequestException('Estado de pedido inválido')
+    return this.prisma.$transaction(async (tx) => {
+      const exists = await tx.order.findUnique({ where: { id } })
+      if (!exists || exists.deletedAt) throw new NotFoundException('Pedido no encontrado')
+      if (exists.status === mapped) return tx.order.findUnique({ where: { id }, include: orderDetails })
+      const changed = await tx.order.updateMany({ where: { id, status: exists.status }, data: { status: mapped as OrderStatus } })
+      if (!changed.count) throw new ConflictException('El pedido cambió. Recargá antes de actualizarlo.')
+      const order = await tx.order.findUniqueOrThrow({ where: { id }, include: orderDetails })
+      // One durable notification per order and milestone, committed with the new status.
+      const kind = mapped === OrderStatus.en_preparacion ? 'approval' : mapped === OrderStatus.enviado ? 'shipped' : mapped === OrderStatus.entregado ? 'delivered' : null
+      if (kind) {
+        await tx.orderApprovalEmail.upsert({
+          where: { orderId_kind: { orderId: id, kind } }, update: {},
+          create: { orderId: id, kind, payload: buildOrderStatusEmail(order, kind) as unknown as Prisma.InputJsonValue },
+        })
+      }
+      if (mapped === OrderStatus.cancelado || mapped === OrderStatus.rechazado) {
+        await tx.orderApprovalEmail.updateMany({ where: { orderId: id, status: 'pending' }, data: { status: 'cancelled' } })
+      }
+      await tx.activityLog.create({ data: { userId: actorId, action: 'Cambio de estado de pedido', entity: 'order', metadata: { orderId: id, previousStatus: exists.status, status: mapped } } })
+      return tx.order.findUniqueOrThrow({ where: { id }, include: orderDetails })
     })
-    await this.prisma.activityLog.create({ data: { userId: actorId, action: 'Cambio de estado de pedido', entity: 'order', metadata: { orderId: id, status } } })
-    return order
   }
 }

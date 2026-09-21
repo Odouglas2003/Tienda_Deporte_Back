@@ -51,7 +51,7 @@ async function getSummary() {
   const retailClientCount = users.filter((user) => user.role === 'cliente' && user.accountType === 'minorista').length
   const sellerCount = users.filter((user) => user.role === 'vendedor' && user.active !== false).length
   const ordersToFinalizeCount = orders.filter((order) =>
-    ['pendiente', 'en revision', 'aprobado', 'en preparacion'].includes(order.status)
+    ['pendiente', 'en revision', 'aprobado', 'en preparacion', 'enviado'].includes(order.status)
   ).length
   const deliveredOrdersCount = orders.filter((order) => order.status === 'entregado').length
   const totalRevenue = validOrders.reduce((sum, order) => sum + Number(order.total || 0), 0)

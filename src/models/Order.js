@@ -32,7 +32,7 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pendiente', 'en revision', 'aprobado', 'rechazado', 'en preparacion', 'entregado', 'cancelado'],
+      enum: ['pendiente', 'en revision', 'aprobado', 'rechazado', 'en preparacion', 'enviado', 'entregado', 'cancelado'],
       default: 'pendiente',
     },
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

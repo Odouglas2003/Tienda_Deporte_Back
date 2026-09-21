@@ -31,6 +31,7 @@ enum OrderStatus {
   aprobado
   rechazado
   en_preparacion @map("en preparacion")
+  enviado
   entregado
   cancelado
 }
@@ -121,6 +122,7 @@ model Order {
   customerEmail String     @default("")
   sellerId     String?
   seller       User?       @relation("SellerOrders", fields: [sellerId], references: [id])
+  emailNotifications OrderApprovalEmail[]
   items        OrderItem[]
   total        Float
   shippingCost Float       @default(0)
@@ -142,6 +144,7 @@ model OrderItem {
   order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId  String
   product    Product @relation(fields: [productId], references: [id])
+  image       String  @default("")
   productName String
   variantSku  String  @default("")
   selectedColor String @default("")
@@ -201,4 +204,21 @@ model NewsletterSubscriber {
   subscribedAt DateTime @default(now())
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+model OrderApprovalEmail {
+  id String @id @default(cuid())
+  orderId String
+  kind String @default("approval")
+  order Order @relation(fields: [orderId], references: [id])
+  payload Json
+  status String @default("pending")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  firstAttemptAt DateTime?
+  sentAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  @@unique([orderId, kind])
+  @@index([status, nextAttemptAt])
 }

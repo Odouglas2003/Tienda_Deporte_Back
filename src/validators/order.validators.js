@@ -7,7 +7,7 @@ const createOrderValidator = [
 
 const updateOrderStatusValidator = [
   body('status')
-    .isIn(['pendiente', 'en revision', 'aprobado', 'rechazado', 'en preparacion', 'entregado', 'cancelado'])
+    .isIn(['pendiente', 'en revision', 'aprobado', 'rechazado', 'en preparacion', 'enviado', 'entregado', 'cancelado'])
     .withMessage('Estado de pedido invalido'),
 ]
 
