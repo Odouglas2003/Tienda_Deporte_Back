@@ -123,6 +123,7 @@ model Order {
   sellerId     String?
   seller       User?       @relation("SellerOrders", fields: [sellerId], references: [id])
   emailNotifications OrderApprovalEmail[]
+  checkoutRequest CheckoutRequest?
   items        OrderItem[]
   total        Float
   shippingCost Float       @default(0)
@@ -221,4 +222,13 @@ model OrderApprovalEmail {
   createdAt DateTime @default(now())
   @@unique([orderId, kind])
   @@index([status, nextAttemptAt])
+}
+
+model CheckoutRequest {
+  keyHash String @id
+  ownerHash String
+  fingerprint String
+  orderId String? @unique
+  order Order? @relation(fields: [orderId], references: [id])
+  createdAt DateTime @default(now())
 }

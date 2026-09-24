@@ -23,7 +23,7 @@ async function main() {
     orderApprovalEmail:{upsert:async({create})=>{const key=create.orderId+'/'+create.kind;if(!notifications.has(key)){notifications.set(key,create);queued++}},updateMany:async()=>({count:0})},
     activityLog:{create:async()=>{logs++}},
   }
-  const service=new OrdersService({$transaction:fn=>fn(tx)},null,null)
+  const service=new OrdersService({user:{findUnique:async()=>({id:'admin',role:'admin',active:true})},$transaction:fn=>fn(tx)},null,null)
   await assert.rejects(()=>service.updateStatus('qa','invalido','admin'),/inválido/)
   await service.updateStatus('qa','en preparacion','admin'); assert.equal(order.status,'en_preparacion'); assert.equal(queued,1)
   await service.updateStatus('qa','en preparacion','admin'); assert.equal(logs,1)
@@ -32,10 +32,10 @@ async function main() {
   await service.updateStatus('qa','enviado','admin'); assert.equal(queued,2)
   await service.updateStatus('qa','entregado','admin'); assert.equal(order.status,'entregado'); assert.equal(queued,3)
   await service.updateStatus('qa','entregado','admin'); assert.equal(queued,3)
-  await service.updateStatus('qa','enviado','admin'); await service.updateStatus('qa','entregado','admin'); assert.equal(queued,3)
+  await assert.rejects(()=>service.updateStatus('qa','enviado','admin'),/cerrado/); assert.equal(queued,3)
   assert.match(notifications.get('qa/shipped').payload.subject,/fue enviado/)
   assert.match(notifications.get('qa/delivered').payload.subject,/fue entregado/)
-  tx.order.updateMany=async()=>({count:0}); await assert.rejects(()=>service.updateStatus('qa','aprobado','admin'),/cambió/)
+  order.status='pendiente'; tx.order.updateMany=async()=>({count:0}); await assert.rejects(()=>service.updateStatus('qa','aprobado','admin'),/cambió/)
   const row={id:'mail',orderId:'qa',kind:'approval',payload:email,status:'pending',attempts:0,firstAttemptAt:null,nextAttemptAt:new Date(0)}
   let calls=0
   const prisma={orderApprovalEmail:{

@@ -1,7 +1,7 @@
 type ApprovalOrder = {
   code: string; customerName?: string; customerEmail?: string
   user?: { name: string; email: string } | null
-  items: Array<{ productName: string; image?: string; product?: { images: string[] }; variantSku?: string; selectedColor?: string; selectedSize?: string; selectedGender?: string; quantity: number; unitPrice: number; subtotal: number }>
+  items: Array<{ productName: string; image?: string; product?: { images: string[]; variants?: unknown }; variantSku?: string; selectedColor?: string; selectedSize?: string; selectedGender?: string; quantity: number; unitPrice: number; subtotal: number }>
   total: number; taxAmount: number; shippingCost: number; paymentMethod: string; shipping?: unknown
 }
 
@@ -30,7 +30,8 @@ export function buildOrderStatusEmail(order: ApprovalOrder, kind: OrderEmailKind
   const subtotal = order.items.reduce((sum, item) => sum + item.subtotal, 0)
   const rows = order.items.map(item => {
     const variant = [item.selectedColor, item.selectedSize && `Talle ${item.selectedSize}`, item.selectedGender].filter(Boolean).join(' · ')
-    const image = item.image || item.product?.images[0]
+    const variants = Array.isArray(item.product?.variants) ? item.product.variants as Array<{ sku?: string; image?: string }> : []
+    const image = item.image || variants.find(variant => variant.sku === item.variantSku)?.image || item.product?.images[0]
     const photo = image && /^https:\/\//i.test(image) ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(item.productName)}" width="64" height="64" style="object-fit:contain">` : ''
     return `<tr><td style="padding:12px;border-bottom:1px solid #ddd">${photo}<br><strong>${escapeHtml(item.productName)}</strong><br>${escapeHtml(variant)}<br>SKU: ${escapeHtml(item.variantSku || '—')}</td><td style="padding:12px">${item.quantity}</td><td style="padding:12px">${money(item.unitPrice)}</td><td style="padding:12px">${money(item.subtotal)}</td></tr>`
   }).join('')
