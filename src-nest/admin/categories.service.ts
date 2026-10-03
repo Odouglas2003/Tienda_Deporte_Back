@@ -37,13 +37,17 @@ export class CategoriesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list() {
-    const categories = await this.prisma.category.findMany({ where: { deletedAt: null }, orderBy: { name: 'asc' } })
-    return Promise.all(categories.map(async (category) => ({
-      ...category,
-      productCount: await this.prisma.product.count({
-        where: { deletedAt: null, OR: [{ category: category.name }, { categories: { has: category.name } }] },
-      }),
-    })))
+    const [categories, products] = await Promise.all([
+      this.prisma.category.findMany({ where: { deletedAt: null }, orderBy: { name: 'asc' } }),
+      this.prisma.product.findMany({ where: { deletedAt: null }, select: { category: true, categories: true } }),
+    ])
+    const counts = new Map<string, number>()
+    for (const product of products) {
+      for (const name of new Set([product.category, ...product.categories])) {
+        counts.set(name, (counts.get(name) ?? 0) + 1)
+      }
+    }
+    return categories.map((category) => ({ ...category, productCount: counts.get(category.name) ?? 0 }))
   }
 
   async create(body: any) {
