@@ -11,11 +11,17 @@ async function bootstrap() {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean)
-  const vercelPreviewOrigin = /^https:\/\/tienda-deporte-front-[a-z0-9]+-odouglas2003s-projects\.vercel\.app$/
+  const trustedOrigins = new Set([
+    ...configuredOrigins,
+    'https://tienda-deporte-front.vercel.app',
+    'https://nezha.com.ar',
+    'https://www.nezha.com.ar',
+  ])
+  const vercelPreviewOrigin = /^https:\/\/tienda-deporte-front-(?:git-main|[a-z0-9]+)-odouglas2003s-projects\.vercel\.app$/
 
   app.enableCors({
     origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
-      if (!origin || configuredOrigins.includes(origin) || vercelPreviewOrigin.test(origin)) {
+      if (!origin || trustedOrigins.has(origin) || vercelPreviewOrigin.test(origin)) {
         callback(null, true)
         return
       }
