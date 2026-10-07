@@ -201,14 +201,31 @@ export class ProductsService {
       const first = group[0]
       const variantSkus = Array.from(new Set(group.map((item) => item.sku)))
       try {
-        const existing = await this.prisma.product.findUnique({ where: { sku: first.sku } })
+        // Match a grouped product even when the Excel lists another variant first.
+        const matches = await this.prisma.product.findMany({ where: { OR: [
+          { sku: { in: variantSkus } },
+          ...variantSkus.map(sku => ({ variants: { array_contains: [{ sku }] } })),
+        ] } })
+        const matchedVariants = (product: typeof matches[number]) => Array.isArray(product.variants)
+          ? (product.variants as any[]).filter(variant => variantSkus.includes(variant.sku)).length : 0
+        const existing = matches.sort((a, b) =>
+          Number(b.active && !b.deletedAt) - Number(a.active && !a.deletedAt)
+          || matchedVariants(b) - matchedVariants(a)
+          || Number(b.sku === first.sku) - Number(a.sku === first.sku)
+          || a.id.localeCompare(b.id)
+        )[0]
+        const savedVariants = Array.isArray(existing?.variants) ? existing.variants as any[] : []
         const categories = Array.from(new Set([first.category, ...(Array.isArray(first.row?.categories) ? first.row.categories : [])].map(text).filter(Boolean)))
         const variants = group.map((item) => ({
           sku: item.sku,
           color: extractVariantValue(item.row, 'color'),
           size: extractVariantValue(item.row, 'size'),
           gender: extractVariantValue(item.row, 'gender'),
-          image: text(item.row?.image_link || item.row?.image),
+          image: existing
+            ? text(savedVariants.some(variant => variant.sku === item.sku)
+              ? savedVariants.find(variant => variant.sku === item.sku)?.image
+              : existing.images[0])
+            : text(item.row?.image_link || item.row?.image),
           stock: Math.max(0, Math.round(number(item.row?.stock ?? item.row?.quantity_to_sell_on_facebook) ?? (/^(in stock|disponible|si|sí)$/i.test(text(item.row?.availability)) ? 1 : 0))),
           priceRetail: item.priceRetail,
           priceWholesale: item.priceWholesale,
@@ -217,7 +234,7 @@ export class ProductsService {
         const sizes = Array.from(new Set(variants.map((variant) => variant.size).filter(Boolean)))
         const images = Array.from(new Set(variants.map((variant) => variant.image).filter(Boolean)))
         const data = {
-          sku: first.sku,
+          sku: existing?.sku ?? first.sku,
           name: baseProductName(first.row) || first.name,
           description: text(first.row?.description),
           category: first.category,
@@ -236,10 +253,21 @@ export class ProductsService {
           active: true,
         }
 
-        const product = await this.prisma.product.upsert({ where: { sku: first.sku }, create: data, update: { ...data, deletedAt: null } })
+        const product = await this.prisma.$transaction(async tx => {
+          if (!existing) return tx.product.create({ data })
+          // Never write gallery images during reimports. A concurrent photo edit
+          // also invalidates the snapshot used to retain variant images.
+          const { images: _importedImages, ...updateData } = data
+          const updated = await tx.product.updateMany({
+            where: { id: existing.id, updatedAt: existing.updatedAt },
+            data: { ...updateData, deletedAt: null },
+          })
+          if (!updated.count) throw new ConflictException('El producto cambió durante la importación. Volvé a importar para conservar los cambios más recientes.')
+          return { id: existing.id }
+        })
         if (variantSkus.length > 1) {
           await this.prisma.product.updateMany({
-            where: { sku: { in: variantSkus.filter((sku) => sku !== first.sku) }, id: { not: product.id } },
+            where: { sku: { in: variantSkus.filter((sku) => sku !== data.sku) }, id: { not: product.id } },
             data: { active: false, deletedAt: new Date() },
           })
         }
