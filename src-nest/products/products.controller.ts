@@ -15,7 +15,10 @@ export class ProductsController {
   @Post() create(@Body() body: any) { return this.products.create(body) }
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.admin, UserRole.superAdmin)
-  @Post('import') importCatalog(@Body() body: any) { return this.products.importCatalog(body?.rows) }
+  @Post('import') importCatalog(@Body() body: any) { return this.products.importCatalog(body?.rows, { mode: body?.mode, dryRun: body?.dryRun, expectedVersions: body?.expectedVersions }) }
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.admin, UserRole.superAdmin)
+  @Post('import/preview') previewCatalog(@Body() body: any) { return this.products.importCatalog(body?.rows, { mode: body?.mode, dryRun: true }) }
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.admin, UserRole.superAdmin)
   @Post('bulk') bulk(@Body() body: any) { return this.products.bulk(body?.rows) }

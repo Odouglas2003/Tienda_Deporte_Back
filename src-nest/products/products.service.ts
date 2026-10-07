@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
+import { catalogNumber, catalogChanges, ImportOptions, ImportPlan } from './catalog-import'
 
 const COLOR_PATTERN_SOURCE = '\\b(azul\\s+marino|multicolor|multi|negro|negra|neg|blanco|blanca|bco|azul|verde|ver|rojo|roja|roj|gris|amarillo|amarilla|amar|naranja|nar|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo|dorado|dorada|dor|plateado|plateada|turquesa)\\b'
 const SIZE_PATTERN = /\b(XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
@@ -137,26 +138,26 @@ export class ProductsService {
     }, { timeout: 15000 })
   }
 
-  async importCatalog(rows: any[] = []) {
+  async importCatalog(rows: any[] = [], options: ImportOptions = {}) {
+    const mode = options.mode ?? 'full'
+    if (!['full', 'prices', 'stock'].includes(mode)) throw new BadRequestException('Modo de importación inválido')
     if (!Array.isArray(rows) || rows.length === 0) {
       throw new BadRequestException('No se recibieron filas para importar')
     }
+    if (rows.length > 5000) throw new BadRequestException('Importá hasta 5000 filas por archivo.')
+    const skus = rows.map(row => cleanText(row?.id || row?.sku)).filter(Boolean)
+    if (new Set(skus).size !== skus.length) throw new BadRequestException('Hay códigos/SKU repetidos en el Excel. Corregilos antes de importar.')
+    if (mode !== 'full') return this.importUpdates(rows, options)
 
     const errors: Array<{ rowNumber: number; sku: string | null; message: string }> = []
     let createdCount = 0
     let updatedCount = 0
+    let unchangedCount = 0
+    const plans: ImportPlan[] = []
+    const versions: Record<string, string | null> = {}
 
     const text = (value: unknown) => String(value ?? '').trim()
-    const number = (value: unknown) => {
-      if (typeof value === 'number' && Number.isFinite(value)) return value
-      const raw = text(value).replace(/[^\d,.-]/g, '')
-      if (!raw) return null
-      const normalized = raw.includes(',') && raw.includes('.')
-        ? (raw.lastIndexOf(',') > raw.lastIndexOf('.') ? raw.replace(/\./g, '').replace(',', '.') : raw.replace(/,/g, ''))
-        : raw.replace(',', '.')
-      const parsed = Number(normalized)
-      return Number.isFinite(parsed) ? parsed : null
-    }
+    const number = catalogNumber
 
     const validRows: Array<{
       row: any
@@ -179,8 +180,8 @@ export class ProductsService {
         !sku && 'código/SKU',
         !name && 'nombre',
         !category && 'categoría',
-        priceRetail === null && 'precio minorista',
-        priceWholesale === null && 'precio mayorista',
+        (priceRetail === null || !Number.isFinite(priceRetail) || priceRetail < 0) && 'precio minorista válido',
+        (priceWholesale === null || !Number.isFinite(priceWholesale) || priceWholesale < 0) && 'precio mayorista válido',
       ].filter(Boolean)
 
       if (missing.length > 0) {
@@ -215,43 +216,58 @@ export class ProductsService {
           || a.id.localeCompare(b.id)
         )[0]
         const savedVariants = Array.isArray(existing?.variants) ? existing.variants as any[] : []
-        const categories = Array.from(new Set([first.category, ...(Array.isArray(first.row?.categories) ? first.row.categories : [])].map(text).filter(Boolean)))
-        const variants = group.map((item) => ({
+        versions[first.sku] = existing?.updatedAt.toISOString() ?? null
+        if (options.expectedVersions && (!Object.prototype.hasOwnProperty.call(options.expectedVersions, first.sku) || options.expectedVersions[first.sku] !== versions[first.sku])) throw new ConflictException('Cambió el catálogo desde la revisión. Revisá los cambios otra vez antes de confirmar.')
+        const categories = Array.from(new Set([first.category, ...(Array.isArray(first.row?.categories) && first.row.categories.length
+          ? first.row.categories : existing?.category === first.category ? existing.categories : [])].map(text).filter(Boolean)))
+        const incomingVariants = group.map((item) => {
+          const saved = savedVariants.find(variant => variant.sku === item.sku)
+          const stockValue = number(item.row?.stock ?? item.row?.quantity_to_sell_on_facebook)
+          if (stockValue !== null && (!Number.isSafeInteger(stockValue) || stockValue < 0)) throw new BadRequestException(`Stock inválido para ${item.sku}. Usá cantidades enteras desde cero.`)
+          return ({
           sku: item.sku,
-          color: extractVariantValue(item.row, 'color'),
-          size: extractVariantValue(item.row, 'size'),
-          gender: extractVariantValue(item.row, 'gender'),
+          color: extractVariantValue(item.row, 'color') || saved?.color || '',
+          size: extractVariantValue(item.row, 'size') || saved?.size || '',
+          gender: extractVariantValue(item.row, 'gender') || saved?.gender || '',
           image: existing
             ? text(savedVariants.some(variant => variant.sku === item.sku)
               ? savedVariants.find(variant => variant.sku === item.sku)?.image
               : existing.images[0])
             : text(item.row?.image_link || item.row?.image),
-          stock: Math.max(0, Math.round(number(item.row?.stock ?? item.row?.quantity_to_sell_on_facebook) ?? (/^(in stock|disponible|si|sí)$/i.test(text(item.row?.availability)) ? 1 : 0))),
+          stock: stockValue ?? saved?.stock ?? (existing && group.length === 1 && !savedVariants.length ? existing.stock : 0),
           priceRetail: item.priceRetail,
           priceWholesale: item.priceWholesale,
-        }))
-        const colors = Array.from(new Set(variants.flatMap((variant) => variant.color.split('/').map((color) => color.trim()).filter(Boolean))))
+          })
+        })
+        const variants = [...savedVariants.filter(variant => !variantSkus.includes(variant.sku)), ...incomingVariants]
+        const colors = Array.from(new Set(variants.flatMap((variant) => String(variant.color ?? '').split('/').map((color: string) => color.trim()).filter(Boolean))))
         const sizes = Array.from(new Set(variants.map((variant) => variant.size).filter(Boolean)))
         const images = Array.from(new Set(variants.map((variant) => variant.image).filter(Boolean)))
         const data = {
           sku: existing?.sku ?? first.sku,
           name: baseProductName(first.row) || first.name,
-          description: text(first.row?.description),
+          description: text(first.row?.description) || existing?.description || '',
           category: first.category,
           categories,
-          subcategory: text(first.row?.subcategory || first.row?.['style[0]']).toLowerCase(),
-          brand: text(first.row?.brand),
-          priceRetail: Math.min(...variants.map((variant) => variant.priceRetail)),
-          priceWholesale: Math.min(...variants.map((variant) => variant.priceWholesale)),
+          subcategory: text(first.row?.subcategory || first.row?.['style[0]']).toLowerCase() || existing?.subcategory || '',
+          brand: text(first.row?.brand) || existing?.brand || text(first.row?.inferred_brand) || '',
+          priceRetail: Math.min(...variants.map((variant) => variant.priceRetail ?? existing?.priceRetail ?? 0)),
+          priceWholesale: Math.min(...variants.map((variant) => variant.priceWholesale ?? existing?.priceWholesale ?? 0)),
           stock: variants.reduce((total, variant) => total + variant.stock, 0),
-          tax: number(first.row?.tax) ?? 0,
+          tax: number(first.row?.tax) ?? existing?.tax ?? 0,
           images,
           colors,
           sizes,
           variants: variants as Prisma.InputJsonValue,
-          tags: [text(first.row?.['product_tags[0]']), text(first.row?.['product_tags[1]'])].filter(Boolean),
-          active: true,
+          tags: [text(first.row?.['product_tags[0]']) || existing?.tags?.[0] || '', text(first.row?.['product_tags[1]']) || existing?.tags?.[1] || '', ...(existing?.tags?.slice(2) ?? [])].filter(Boolean),
+          active: existing?.active ?? true,
         }
+        if (!Number.isFinite(data.tax) || data.tax < 0 || data.tax > 100) throw new BadRequestException('IVA inválido')
+        const changes = catalogChanges(existing, data)
+        const kind = !existing ? 'create' : changes.length ? 'update' : 'unchanged'
+        plans.push({ sku: first.sku, name: data.name, kind, changes })
+        if (kind === 'unchanged') { unchangedCount++; continue }
+        if (options.dryRun) { if (existing) updatedCount++; else createdCount++; continue }
 
         const product = await this.prisma.$transaction(async tx => {
           if (!existing) return tx.product.create({ data })
@@ -260,7 +276,7 @@ export class ProductsService {
           const { images: _importedImages, ...updateData } = data
           const updated = await tx.product.updateMany({
             where: { id: existing.id, updatedAt: existing.updatedAt },
-            data: { ...updateData, deletedAt: null },
+            data: { ...updateData, deletedAt: existing.deletedAt },
           })
           if (!updated.count) throw new ConflictException('El producto cambió durante la importación. Volvé a importar para conservar los cambios más recientes.')
           return { id: existing.id }
@@ -278,6 +294,66 @@ export class ProductsService {
       }
     }
 
-    return { totalRows: rows.length, createdCount, updatedCount, skippedCount: errors.length, errorCount: errors.length, errors }
+    return { totalRows: rows.length, createdCount, updatedCount, unchangedCount, skippedCount: errors.length, errorCount: errors.length, errors, plans, versions, dryRun: options.dryRun === true }
+  }
+
+  private async importUpdates(rows: any[], options: ImportOptions) {
+    const errors: Array<{ rowNumber: number; sku: string | null; message: string }> = []
+    const plans: ImportPlan[] = []
+    const versions: Record<string, string | null> = {}
+    const skus = rows.map(row => cleanText(row?.id || row?.sku))
+    const products = await this.prisma.product.findMany({ where: { deletedAt: null, OR: [
+      { sku: { in: skus } }, ...skus.map(sku => ({ variants: { array_contains: [{ sku }] } })),
+    ] } })
+    const groups = new Map<string, { product: typeof products[number]; rows: any[] }>()
+    for (const row of rows) {
+      const sku = cleanText(row?.id || row?.sku)
+      const product = products.find(product => Array.isArray(product.variants) && (product.variants as any[]).some(v => v.sku === sku))
+        ?? products.find(product => product.sku === sku)
+      if (!sku || !product) { errors.push({ rowNumber: row.rowNumber, sku: sku || null, message: 'El SKU no existe. Usá Importación completa para crear productos nuevos.' }); continue }
+      const group = groups.get(product.id) ?? { product, rows: [] }
+      group.rows.push(row); groups.set(product.id, group)
+    }
+    let updatedCount = 0
+    let unchangedCount = 0
+    for (const { product, rows: group } of groups.values()) {
+      try {
+        const data: any = {}
+        const variants = Array.isArray(product.variants) ? (product.variants as any[]).map(v => ({ ...v })) : []
+        for (const row of group) {
+          const sku = cleanText(row.id || row.sku)
+          versions[sku] = product.updatedAt.toISOString()
+          if (options.expectedVersions && options.expectedVersions[sku] !== versions[sku]) throw new ConflictException('Cambió el catálogo desde la revisión. Revisá otra vez antes de confirmar.')
+          const variant = variants.find(v => v.sku === sku)
+          if (variants.length && !variant) throw new BadRequestException('Para este producto indicá el SKU de cada variante.')
+          const values = options.mode === 'stock'
+            ? { stock: catalogNumber(row.stock ?? row.quantity_to_sell_on_facebook) }
+            : { priceRetail: catalogNumber(row.price_retail ?? row.price), priceWholesale: catalogNumber(row.price_wholesale ?? row.wholesale_price) }
+          for (const [field, value] of Object.entries(values)) {
+            if (value === null) continue
+            if (!Number.isFinite(value) || value < 0 || (field === 'stock' && !Number.isSafeInteger(value))) throw new BadRequestException(`Valor inválido en ${field === 'stock' ? 'stock (cantidad entera)' : 'precio'} del SKU ${sku}.`)
+            if (variant) variant[field] = value
+            else data[field] = value
+          }
+        }
+        if (variants.length) {
+          data.variants = variants
+          if (options.mode === 'stock') data.stock = variants.reduce((sum, v) => sum + Number(v.stock), 0)
+          else {
+            data.priceRetail = Math.min(...variants.map(v => v.priceRetail ?? product.priceRetail))
+            data.priceWholesale = Math.min(...variants.map(v => v.priceWholesale ?? product.priceWholesale))
+          }
+        }
+        const changes = catalogChanges(product, data)
+        plans.push({ sku: product.sku, name: product.name, kind: changes.length ? 'update' : 'unchanged', changes })
+        if (!changes.length) { unchangedCount++; continue }
+        if (!options.dryRun) {
+          const updated = await this.prisma.product.updateMany({ where: { id: product.id, deletedAt: null, updatedAt: product.updatedAt }, data })
+          if (!updated.count) throw new ConflictException('El producto cambió mientras importabas. Revisá otra vez antes de confirmar.')
+        }
+        updatedCount++
+      } catch (error) { errors.push({ rowNumber: group[0].rowNumber, sku: product.sku, message: error instanceof Error ? error.message : 'No se pudo actualizar' }) }
+    }
+    return { totalRows: rows.length, createdCount: 0, updatedCount, unchangedCount, skippedCount: errors.length, errorCount: errors.length, errors, plans, versions, dryRun: options.dryRun === true }
   }
 }
