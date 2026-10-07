@@ -18,5 +18,8 @@ export class ProductsController {
   @Post('import') importCatalog(@Body() body: any) { return this.products.importCatalog(body?.rows) }
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.admin, UserRole.superAdmin)
+  @Post('bulk') bulk(@Body() body: any) { return this.products.bulk(body?.rows) }
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.admin, UserRole.superAdmin)
   @Put(':id') update(@Param('id') id: string, @Body() body: any) { return this.products.update(id, body) }
 }

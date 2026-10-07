@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 
@@ -92,8 +92,49 @@ export class ProductsService {
   }
 
   async update(id: string, payload: any) {
-    await this.get(id)
-    return this.prisma.product.update({ where: { id }, data: payload })
+    if (payload.sizeGuide !== undefined && (typeof payload.sizeGuide !== 'string' || payload.sizeGuide.length > 5000)) throw new BadRequestException('La guía de talles admite hasta 5000 caracteres.')
+    const product = await this.get(id)
+    const { expectedUpdatedAt, ...data } = payload
+    if (expectedUpdatedAt !== undefined && new Date(expectedUpdatedAt).getTime() !== product.updatedAt.getTime()) throw new ConflictException('El producto cambió mientras editabas. Cerrá y recargá la lista antes de guardar.')
+    const changed = await this.prisma.product.updateMany({ where: { id, deletedAt: null, updatedAt: product.updatedAt }, data })
+    if (!changed.count) throw new ConflictException('El stock o precio cambió. Recargá el producto antes de guardar.')
+    return this.get(id)
+  }
+
+  async bulk(rows: any) {
+    if (!Array.isArray(rows) || !rows.length || rows.length > 100 || new Set(rows.map(row => row?.id)).size !== rows.length) throw new BadRequestException('Seleccioná entre 1 y 100 productos diferentes.')
+    return this.prisma.$transaction(async tx => {
+      for (const row of [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+        const product = await tx.product.findFirst({ where: { id: row.id, deletedAt: null } })
+        if (!product || !row.updatedAt || new Date(row.updatedAt).getTime() !== product.updatedAt.getTime()) throw new ConflictException('Un producto cambió. Recargá la lista antes de editar el lote.')
+        const data: Prisma.ProductUpdateManyMutationInput = {}
+        for (const field of ['priceRetail', 'priceWholesale', 'stock'] as const) {
+          if (row[field] === undefined) continue
+          if (typeof row[field] !== 'number' || !Number.isFinite(row[field]) || row[field] < 0 || (field === 'stock' && !Number.isSafeInteger(row[field]))) throw new BadRequestException('Los precios deben ser positivos y el stock un número entero.')
+          data[field] = row[field]
+        }
+        const variants = Array.isArray(product.variants) ? product.variants as any[] : []
+        if (variants.length) {
+          if (row.stock !== undefined) throw new BadRequestException('El stock de este producto debe editarse por variante.')
+          if (row.variants !== undefined && (!Array.isArray(row.variants) || new Set(row.variants.map((v: any) => v.sku)).size !== row.variants.length)) throw new BadRequestException('Variantes inválidas')
+          for (const change of row.variants ?? []) {
+            const variant = variants.find(v => v.sku === change.sku)
+            if (!variant || !Number.isSafeInteger(change.stock) || change.stock < 0) throw new BadRequestException('Revisá SKU y stock de cada variante.')
+            variant.stock = change.stock
+          }
+          for (const variant of variants) {
+            if (row.priceRetail !== undefined) variant.priceRetail = row.priceRetail
+            if (row.priceWholesale !== undefined) variant.priceWholesale = row.priceWholesale
+          }
+          data.variants = variants as Prisma.InputJsonValue
+          data.stock = variants.reduce((sum, v) => sum + Number(v.stock), 0)
+        } else if (row.variants?.length) throw new BadRequestException('El producto no tiene variantes.')
+        const changed = await tx.product.updateMany({ where: { id: product.id, updatedAt: product.updatedAt, deletedAt: null }, data })
+        if (!changed.count) throw new ConflictException('Cambió el stock o precio mientras editabas. Recargá la lista.')
+      }
+      await tx.activityLog.create({ data: { action: 'Edición de precios y stock por lote', entity: 'product', metadata: { productIds: rows.map(row => row.id) } } })
+      return { updatedCount: rows.length }
+    }, { timeout: 15000 })
   }
 
   async importCatalog(rows: any[] = []) {

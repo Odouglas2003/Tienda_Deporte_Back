@@ -75,6 +75,7 @@ model Product {
   name           String
   sku            String      @unique
   description    String      @default("")
+  sizeGuide      String      @default("")
   category       String
   categories     String[]
   subcategory    String      @default("")
@@ -126,6 +127,8 @@ model Order {
   checkoutRequest CheckoutRequest?
   items        OrderItem[]
   total        Float
+  couponCode   String      @default("")
+  discountAmount Float     @default(0)
   shippingCost Float       @default(0)
   taxAmount    Float       @default(0)
   paymentMethod String
@@ -137,6 +140,19 @@ model Order {
 
   @@index([userId, createdAt])
   @@index([sellerId, status])
+}
+
+model Coupon {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  percent     Float
+  minSubtotal Float    @default(0)
+  maxUses     Int
+  usedCount   Int      @default(0)
+  expiresAt   DateTime
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model OrderItem {

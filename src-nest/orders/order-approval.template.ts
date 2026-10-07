@@ -2,7 +2,7 @@ type ApprovalOrder = {
   code: string; customerName?: string; customerEmail?: string
   user?: { name: string; email: string } | null
   items: Array<{ productName: string; image?: string; product?: { images: string[]; variants?: unknown }; variantSku?: string; selectedColor?: string; selectedSize?: string; selectedGender?: string; quantity: number; unitPrice: number; subtotal: number }>
-  total: number; taxAmount: number; shippingCost: number; paymentMethod: string; shipping?: unknown
+  total: number; taxAmount: number; shippingCost: number; paymentMethod: string; shipping?: unknown; couponCode?: string; discountAmount?: number
 }
 
 export function escapeHtml(value: unknown) {
@@ -39,10 +39,10 @@ export function buildOrderStatusEmail(order: ApprovalOrder, kind: OrderEmailKind
   const text = [
     'NEZHA SPORTS', heading, `Hola ${name}. ${message.intro}`,
     ...order.items.map(item => `${item.productName} | ${[item.selectedColor, item.selectedSize, item.selectedGender].filter(Boolean).join(' / ')} | SKU ${item.variantSku || '—'} | ${item.quantity} x ${money(item.unitPrice)} = ${money(item.subtotal)} (sin IVA)`),
-    `Subtotal: ${money(subtotal)}`, `IVA: ${money(order.taxAmount)}`, `Envío: ${money(order.shippingCost)}`, `Total: ${money(order.total)}`,
+    `Subtotal: ${money(subtotal)}`, ...(order.discountAmount ? [`Descuento ${order.couponCode}: -${money(order.discountAmount)}`] : []), `IVA: ${money(order.taxAmount)}`, `Envío: ${money(order.shippingCost)}`, `Total: ${money(order.total)}`,
     `Medio de pago: ${payment}`, `Entrega: ${address || 'A coordinar'}`, shipping.notes ? `Notas: ${shipping.notes}` : '',
     message.footer, 'Gracias por comprar en NEZHA.',
   ].filter(Boolean).join('\n')
-  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033"><main style="max-width:640px;margin:auto;background:white;padding:28px"><p style="color:#0891b2;font-weight:bold">NEZHA SPORTS</p><h1 style="font-size:26px">${escapeHtml(heading)}</h1><p>Hola ${escapeHtml(name)}. ${escapeHtml(message.intro)}</p><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th align="left">Producto</th><th>Cant.</th><th>Unitario sin IVA</th><th>Subtotal sin IVA</th></tr></thead><tbody>${rows}</tbody></table><p>Productos: ${money(subtotal)}<br>IVA: ${money(order.taxAmount)}<br>Envío: ${money(order.shippingCost)}</p><p style="font-size:22px"><strong>Total: ${money(order.total)}</strong></p><h2 style="font-size:18px">Pago y entrega</h2><p>Medio de pago: ${escapeHtml(payment)}<br>Entrega: ${escapeHtml(address || 'A coordinar')}</p>${shipping.notes ? `<p>Notas: ${escapeHtml(shipping.notes)}</p>` : ''}<p style="font-size:12px;color:#64748b">${escapeHtml(message.footer)}</p><p>Gracias por comprar en NEZHA.</p></main></body></html>`
+  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033"><main style="max-width:640px;margin:auto;background:white;padding:28px"><p style="color:#0891b2;font-weight:bold">NEZHA SPORTS</p><h1 style="font-size:26px">${escapeHtml(heading)}</h1><p>Hola ${escapeHtml(name)}. ${escapeHtml(message.intro)}</p><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th align="left">Producto</th><th>Cant.</th><th>Unitario sin IVA</th><th>Subtotal sin IVA</th></tr></thead><tbody>${rows}</tbody></table><p>Productos: ${money(subtotal)}<br>${order.discountAmount ? `Descuento ${escapeHtml(order.couponCode)}: -${money(order.discountAmount)}<br>` : ''}IVA: ${money(order.taxAmount)}<br>Envío: ${money(order.shippingCost)}</p><p style="font-size:22px"><strong>Total: ${money(order.total)}</strong></p><h2 style="font-size:18px">Pago y entrega</h2><p>Medio de pago: ${escapeHtml(payment)}<br>Entrega: ${escapeHtml(address || 'A coordinar')}</p>${shipping.notes ? `<p>Notas: ${escapeHtml(shipping.notes)}</p>` : ''}<p style="font-size:12px;color:#64748b">${escapeHtml(message.footer)}</p><p>Gracias por comprar en NEZHA.</p></main></body></html>`
   return { to: [email], subject: heading, html, text }
 }

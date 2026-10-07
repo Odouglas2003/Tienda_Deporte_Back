@@ -8,9 +8,10 @@ import { ProductsModule } from './products/products.module'
 import { OrdersModule } from './orders/orders.module'
 import { AdminModule } from './admin/admin.module'
 import { CommunicationsModule } from './communications/communications.module'
+import { CouponsModule } from './coupons/coupons.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, UsersModule, ProductsModule, OrdersModule, AdminModule, CommunicationsModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, UsersModule, ProductsModule, OrdersModule, AdminModule, CommunicationsModule, CouponsModule],
   controllers: [HealthController],
 })
 export class AppModule {}

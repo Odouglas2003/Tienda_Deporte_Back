@@ -6,6 +6,7 @@ import * as bcrypt from 'bcryptjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { buildOrderStatusEmail } from './order-approval.template'
 import { VatRatesService, productVatRate } from '../tax/vat-rates.service'
+import { assertCoupon, couponCode } from '../coupons/coupons.service'
 
 const orderDetails = {
   user: { select: { id: true, name: true, email: true, accountType: true } },
@@ -38,7 +39,7 @@ export class OrdersService {
     const request = {
       keyHash: hash(key),
       ownerHash: hash(auth ? 'user:' + auth.sub : 'guest:' + String(customer.email ?? '').trim().toLowerCase()),
-      fingerprint: hash(JSON.stringify({ items: payload.items, paymentMethod: payload.paymentMethod, shipping: payload.shipping, expectedTotal: payload.expectedTotal,
+      fingerprint: hash(JSON.stringify({ items: payload.items, paymentMethod: payload.paymentMethod, shipping: payload.shipping, expectedTotal: payload.expectedTotal, couponCode: couponCode(payload.couponCode),
         customer: auth ? undefined : { firstName: customer.firstName, lastName: customer.lastName, email: String(customer.email ?? '').trim().toLowerCase(), createAccount: customer.createAccount === true } })),
     }
     const replay = async () => {
@@ -135,12 +136,18 @@ export class OrdersService {
       throw new BadRequestException(`El pedido mayorista mínimo es de $${settings.minWholesaleOrder.toLocaleString('es-AR')}`)
     }
     const generalTaxRate = (await this.vatRates.getGeneralRate(Number(settings?.taxPercentage))).rate
+    const appliedCode = couponCode(payload.couponCode)
+    const coupon = appliedCode ? await this.prisma.coupon.findUnique({ where: { code: appliedCode } }) : null
+    if (appliedCode) assertCoupon(coupon, subtotal)
+    const lineDiscount = (amount: number) => Math.round(amount * (coupon?.percent ?? 0)) / 100
+    const discountAmount = Math.round(items.reduce((sum: number, item: { subtotal: number }) => sum + lineDiscount(item.subtotal), 0) * 100) / 100
     const taxAmount = items.reduce((sum: number, item: { productId: string; subtotal: number }) => {
       const productRate = Number(map.get(item.productId)?.tax)
       const rate = productVatRate(productRate, generalTaxRate)
-      return sum + Math.round(item.subtotal * rate) / 100
+      return sum + Math.round((item.subtotal - lineDiscount(item.subtotal)) * rate) / 100
     }, 0)
-    if (payload.expectedTotal !== undefined && (typeof payload.expectedTotal !== 'number' || !Number.isFinite(payload.expectedTotal) || Math.abs(payload.expectedTotal - (subtotal + taxAmount)) >= 0.01)) {
+    const total = Math.round((subtotal - discountAmount + taxAmount) * 100) / 100
+    if (payload.expectedTotal !== undefined && (typeof payload.expectedTotal !== 'number' || !Number.isFinite(payload.expectedTotal) || Math.abs(payload.expectedTotal - total) >= 0.01)) {
       throw new ConflictException('El importe cambió. Actualizá el carrito y revisá el total antes de confirmar.')
     }
     const now = new Date()
@@ -148,6 +155,13 @@ export class OrdersService {
     const code = `PED-${datePart}-${randomUUID().slice(0, 8).toUpperCase()}`
     const result = await this.prisma.$transaction(async (tx) => {
       if (request) await tx.checkoutRequest.create({ data: request })
+      if (coupon) {
+        const claimed = await tx.coupon.updateMany({
+          where: { id: coupon.id, active: true, percent: coupon.percent, minSubtotal: coupon.minSubtotal, maxUses: coupon.maxUses, expiresAt: { equals: coupon.expiresAt, gt: new Date() }, usedCount: { lt: coupon.maxUses } },
+          data: { usedCount: { increment: 1 } },
+        })
+        if (!claimed.count) throw new ConflictException('El cupón cambió o agotó sus usos. Quitalo o volvé a aplicarlo antes de comprar.')
+      }
       const account = createAccount ? await tx.user.create({ data: {
         name: `${firstName} ${lastName}`, email, phone: String(shipping.phone).trim(),
         password: await bcrypt.hash(password, 10), role: 'cliente', accountType: 'minorista', approved: true, approvalStatus: 'approved',
@@ -161,7 +175,7 @@ export class OrdersService {
         if (!changed.count) throw new ConflictException('El stock o el precio cambió durante la compra. Actualizá el carrito y volvé a intentar.')
       }
       const order = await tx.order.create({
-        data: { code, userId: user?.id ?? account?.id, customerName: user?.name ?? `${firstName} ${lastName}`, customerEmail: user?.email ?? email, sellerId: user?.assignedSellerId, items: { create: items }, total: subtotal + taxAmount, shippingCost: 0, taxAmount, paymentMethod: payload.paymentMethod, shipping },
+        data: { code, userId: user?.id ?? account?.id, customerName: user?.name ?? `${firstName} ${lastName}`, customerEmail: user?.email ?? email, sellerId: user?.assignedSellerId, items: { create: items }, total, couponCode: appliedCode, discountAmount, shippingCost: 0, taxAmount, paymentMethod: payload.paymentMethod, shipping },
         include: {
           user: { select: { id: true, name: true, email: true, accountType: true } },
           seller: { select: { id: true, name: true } },

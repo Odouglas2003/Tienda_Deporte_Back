@@ -1,0 +1,11 @@
+ALTER TABLE "Product" ADD COLUMN "sizeGuide" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Order" ADD COLUMN "couponCode" TEXT NOT NULL DEFAULT '', ADD COLUMN "discountAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+CREATE TABLE "Coupon" (
+ "id" TEXT NOT NULL PRIMARY KEY, "code" TEXT NOT NULL, "percent" DOUBLE PRECISION NOT NULL,
+ "minSubtotal" DOUBLE PRECISION NOT NULL DEFAULT 0, "maxUses" INTEGER NOT NULL,
+ "usedCount" INTEGER NOT NULL DEFAULT 0, "expiresAt" TIMESTAMP(3) NOT NULL,
+ "active" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ "updatedAt" TIMESTAMP(3) NOT NULL,
+ CONSTRAINT "Coupon_values_check" CHECK ("percent" > 0 AND "percent" <= 100 AND "minSubtotal" >= 0 AND "maxUses" > 0 AND "usedCount" >= 0)
+);
+CREATE UNIQUE INDEX "Coupon_code_key" ON "Coupon"("code");
