@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common'
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma.service'
 
 export function couponCode(value: unknown) {
@@ -24,7 +24,10 @@ export class CouponsService {
     const { percent, minSubtotal, maxUses } = body ?? {}
     const expiresAt = new Date(body?.expiresAt)
     if (!/^[A-Z0-9_-]{3,30}$/.test(code) || typeof percent !== 'number' || !Number.isFinite(percent) || percent <= 0 || percent > 100 || typeof minSubtotal !== 'number' || !Number.isFinite(minSubtotal) || minSubtotal < 0 || !Number.isSafeInteger(maxUses) || maxUses < 1 || !Number.isFinite(expiresAt.getTime()) || expiresAt <= new Date()) throw new BadRequestException('Revisá código, porcentaje, mínimo, límite y vencimiento del cupón.')
-    return this.prisma.coupon.create({ data: { code, percent, minSubtotal, maxUses, expiresAt } })
+    return this.prisma.coupon.create({ data: { code, percent, minSubtotal, maxUses, expiresAt } }).catch(error => {
+      if (error.code === 'P2002') throw new ConflictException('Ese código de cupón ya existe. Usá otro código.')
+      throw error
+    })
   }
   toggle(id: string, active: unknown) {
     if (typeof active !== 'boolean') throw new BadRequestException('Estado inválido')
