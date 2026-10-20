@@ -16,6 +16,8 @@ async function bootstrap() {
     'https://tienda-deporte-front.vercel.app',
     'https://nezha.com.ar',
     'https://www.nezha.com.ar',
+    'https://nezhasport.com.ar',
+    'https://www.nezhasport.com.ar',
   ])
   const vercelPreviewOrigin = /^https:\/\/tienda-deporte-front-(?:git-main|[a-z0-9]+)-odouglas2003s-projects\.vercel\.app$/
 
