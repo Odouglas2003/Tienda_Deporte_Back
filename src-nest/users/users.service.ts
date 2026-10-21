@@ -22,6 +22,11 @@ export class UsersService {
     return users.map((user) => this.safe(user))
   }
 
+  async listAssignedClients(sellerId: string) {
+    const users = await this.prisma.user.findMany({ where: { assignedSellerId: sellerId, deletedAt: null }, orderBy: { createdAt: 'desc' }, include: { assignedSeller: { select: { id: true, name: true } } } })
+    return users.map((user) => this.safe(user))
+  }
+
   async createSeller(payload: { name: string; email: string; phone?: string }, actorId: string) {
     const email = payload.email.toLowerCase().trim()
     if (await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado')

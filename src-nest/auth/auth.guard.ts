@@ -16,7 +16,7 @@ export class AuthGuard implements CanActivate {
       request.auth = await this.jwt.verifyAsync(token)
       return true
     } catch {
-      throw new UnauthorizedException('Token invalido o vencido')
+      throw new UnauthorizedException('Tu sesión venció. Volvé a iniciar sesión.')
     }
   }
 }

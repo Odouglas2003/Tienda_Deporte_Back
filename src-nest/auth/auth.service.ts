@@ -27,9 +27,9 @@ export class AuthService {
 
   async login(email: string, password: string) {
     const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() }, include: { assignedSeller: { select: { name: true } } } })
-    if (!user || !(await bcrypt.compare(password, user.password))) throw new UnauthorizedException('Credenciales invalidas')
-    if (!user.active) throw new ForbiddenException('La cuenta se encuentra inactiva')
-    if (user.accountType === AccountType.mayorista && !user.approved) throw new ForbiddenException('La cuenta mayorista aun no fue aprobada')
+    if (!user || !(await bcrypt.compare(password, user.password))) throw new UnauthorizedException('Email o contraseña incorrectos')
+    if (!user.active) throw new ForbiddenException('La cuenta está inactiva. Escribinos para reactivarla.')
+    if (user.accountType === AccountType.mayorista && !user.approved) throw new ForbiddenException('Tu cuenta mayorista todavía no fue aprobada. Te avisamos cuando esté habilitada.')
     await this.prisma.activityLog.create({ data: { userId: user.id, action: 'Login', entity: 'auth' } })
     return { user: this.serialize(user), token: this.token(user) }
   }
@@ -39,16 +39,16 @@ export class AuthService {
     if (await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado')
     const wholesale = payload.accountType === AccountType.mayorista
     const rawPassword = wholesale ? randomBytes(16).toString('hex') : payload.password
-    if (!rawPassword || rawPassword.length < 6) throw new BadRequestException('La contrasena debe tener al menos 6 caracteres')
+    if (!rawPassword || rawPassword.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
     const user = await this.prisma.user.create({ data: { ...payload, email, password: await bcrypt.hash(rawPassword, 10), role: UserRole.cliente, approved: !wholesale, approvalStatus: wholesale ? 'pending' : 'approved' } })
     await this.prisma.activityLog.create({ data: { userId: user.id, action: 'Registro de usuario', entity: 'user', metadata: { accountType: payload.accountType } } })
     return wholesale ? { user: this.serialize(user), token: null } : { user: this.serialize(user), token: this.token(user) }
   }
 
   async changeInitialPassword(userId: string, password: string) {
-    if (password.length < 6) throw new BadRequestException('La contrasena debe tener al menos 6 caracteres')
+    if (password.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
     const user = await this.prisma.user.findUnique({ where: { id: userId } })
-    if (!user || !user.mustChangePassword) throw new BadRequestException('La cuenta no requiere cambio inicial de contrasena')
+    if (!user || !user.mustChangePassword) throw new BadRequestException('La cuenta no requiere cambio inicial de contraseña')
     const updated = await this.prisma.user.update({ where: { id: userId }, data: { password: await bcrypt.hash(password, 10), mustChangePassword: false } })
     await this.prisma.activityLog.create({ data: { userId, action: 'Cambio inicial de contrasena', entity: 'auth' } })
     return { user: this.serialize(updated), token: this.token(updated) }

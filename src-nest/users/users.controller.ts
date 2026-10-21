@@ -14,6 +14,7 @@ class ApproveDto { @IsString() @MinLength(6) temporaryPassword!: string; @IsOpti
 @Roles(UserRole.admin, UserRole.superAdmin)
 export class UsersController {
   constructor(private readonly users: UsersService) {}
+  @Get('my-clients') @Roles(UserRole.vendedor) myClients(@Req() req: any) { return this.users.listAssignedClients(req.auth.sub) }
   @Get() list(@Query('role') role?: UserRole, @Query('accountType') accountType?: AccountType, @Query('approvalStatus') approvalStatus?: ApprovalStatus, @Query('search') search?: string) { return this.users.list({ role, accountType, approvalStatus, search }) }
   @Get('pending-wholesalers') pending() { return this.users.list({ accountType: AccountType.mayorista, approvalStatus: ApprovalStatus.pending }) }
   @Post('sellers') create(@Req() req: any, @Body() dto: SellerDto) { return this.users.createSeller(dto, req.auth.sub) }

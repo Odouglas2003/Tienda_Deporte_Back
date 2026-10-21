@@ -10,7 +10,7 @@ export class RolesGuard implements CanActivate {
     const roles = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [context.getHandler(), context.getClass()])
     if (!roles?.length) return true
     const request = context.switchToHttp().getRequest()
-    if (!roles.includes(request.auth?.role)) throw new ForbiddenException('No tenes permisos para esta accion')
+    if (!roles.includes(request.auth?.role)) throw new ForbiddenException('No tenés permisos para esta acción')
     return true
   }
 }
