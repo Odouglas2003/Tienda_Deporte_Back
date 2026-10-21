@@ -1,0 +1,22 @@
+name: Mantener backend despierto
+
+# Render (plan gratuito) apaga el servicio tras 15 minutos sin tráfico y el primer
+# visitante espera ~1 minuto. Este ping cada 10 minutos lo mantiene activo.
+# Nota: GitHub pausa los workflows programados si el repo pasa 60 días sin commits.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping /api/health
+        run: |
+          for attempt in 1 2 3; do
+            if curl -fsS --max-time 90 https://tienda-back-nest.onrender.com/api/health; then exit 0; fi
+            sleep 20
+          done
+          echo "El backend no respondió" && exit 1

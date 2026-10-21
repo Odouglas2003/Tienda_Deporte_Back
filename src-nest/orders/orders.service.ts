@@ -84,11 +84,16 @@ export class OrdersService {
     if (!['transfer', 'transferencia', 'cash', 'check'].includes(payload.paymentMethod)) throw new BadRequestException('Seleccioná un medio de pago válido')
     if (payload.paymentMethod === 'check' && !(user?.accountType === 'mayorista' && user.approved)) throw new BadRequestException('El cheque electrónico está disponible solo para mayoristas aprobados')
 
-    const shipping = payload.shipping && typeof payload.shipping === 'object' ? payload.shipping : {}
+    const rawShipping = payload.shipping && typeof payload.shipping === 'object' ? payload.shipping : {}
+    const pickup = rawShipping.method === 'pickup'
+    // Retiro en el local: no se pide dirección, solo un teléfono para coordinar.
+    const shipping = pickup
+      ? { method: 'pickup', address: '', city: '', postalCode: '', phone: String(rawShipping.phone ?? '').trim(), notes: String(rawShipping.notes ?? '').trim() }
+      : { ...rawShipping, method: 'delivery' }
     const missingShippingFields = [
-      !String(shipping.address ?? '').trim() && 'dirección',
-      !String(shipping.city ?? '').trim() && 'ciudad',
-      !String(shipping.postalCode ?? '').trim() && 'código postal',
+      !pickup && !String(shipping.address ?? '').trim() && 'dirección',
+      !pickup && !String(shipping.city ?? '').trim() && 'ciudad',
+      !pickup && !String(shipping.postalCode ?? '').trim() && 'código postal',
       !String(shipping.phone ?? '').trim() && 'teléfono',
     ].filter(Boolean)
     if (missingShippingFields.length) throw new BadRequestException(`Faltan datos de envío: ${missingShippingFields.join(', ')}`)

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
 import { AccountType, ApprovalStatus, Prisma, User, UserRole } from '@prisma/client'
 import * as bcrypt from 'bcryptjs'
+import { randomInt } from 'node:crypto'
 import { PrismaService } from '../prisma.service'
 
 @Injectable()
@@ -30,9 +31,12 @@ export class UsersService {
   async createSeller(payload: { name: string; email: string; phone?: string }, actorId: string) {
     const email = payload.email.toLowerCase().trim()
     if (await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado')
-    const temporaryPassword = payload.name.trim()
-    if (temporaryPassword.length < 6) throw new BadRequestException('El nombre completo debe tener al menos 6 caracteres')
-    const user = await this.prisma.user.create({ data: { name: temporaryPassword, email, phone: payload.phone?.trim() ?? '', password: await bcrypt.hash(temporaryPassword, 10), role: 'vendedor', accountType: 'minorista', approved: true, approvalStatus: 'approved', mustChangePassword: true } })
+    const name = payload.name.trim()
+    if (name.length < 6) throw new BadRequestException('El nombre completo debe tener al menos 6 caracteres')
+    // Clave temporal aleatoria (sin caracteres ambiguos); el vendedor la cambia en su primer ingreso.
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
+    const temporaryPassword = Array.from({ length: 10 }, () => alphabet[randomInt(alphabet.length)]).join('')
+    const user = await this.prisma.user.create({ data: { name, email, phone: payload.phone?.trim() ?? '', password: await bcrypt.hash(temporaryPassword, 10), role: 'vendedor', accountType: 'minorista', approved: true, approvalStatus: 'approved', mustChangePassword: true } })
     await this.prisma.activityLog.create({ data: { userId: actorId, action: 'Alta de vendedor', entity: 'user', metadata: { userId: user.id, email } } })
     return { user: this.safe(user), temporaryPassword }
   }
@@ -42,7 +46,7 @@ export class UsersService {
     if (!user) throw new NotFoundException('Usuario no encontrado')
     if (user.accountType !== 'mayorista') throw new BadRequestException('Solo se pueden aprobar cuentas mayoristas')
     const updated = await this.prisma.user.update({ where: { id }, data: { approved: true, approvalStatus: 'approved', assignedSellerId: sellerId || null, password: await bcrypt.hash(password, 10), mustChangePassword: true }, include: { assignedSeller: { select: { id: true, name: true } } } })
-    await this.prisma.activityLog.create({ data: { userId: actorId, action: 'Aprobacion de mayorista', entity: 'user', metadata: { userId: id, sellerId: sellerId || '' } } })
+    await this.prisma.activityLog.create({ data: { userId: actorId, action: 'Aprobación de mayorista', entity: 'user', metadata: { userId: id, sellerId: sellerId || '' } } })
     return this.safe(updated)
   }
 

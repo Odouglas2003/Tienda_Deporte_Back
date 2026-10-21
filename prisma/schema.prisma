@@ -65,6 +65,7 @@ model User {
   orders              Order[]        @relation("CustomerOrders")
   sellerOrders        Order[]        @relation("SellerOrders")
   activityLogs        ActivityLog[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([accountType, approvalStatus])
   @@index([role, active])
@@ -247,4 +248,16 @@ model CheckoutRequest {
   orderId String? @unique
   order Order? @relation(fields: [orderId], references: [id])
   createdAt DateTime @default(now())
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
 }

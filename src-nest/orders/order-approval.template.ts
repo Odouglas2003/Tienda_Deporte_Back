@@ -24,9 +24,9 @@ export function buildOrderStatusEmail(order: ApprovalOrder, kind: OrderEmailKind
   const message = messages[kind]
   const name = order.customerName || order.user?.name || 'Cliente'
   const email = order.customerEmail || order.user?.email || ''
-  const shipping = (order.shipping ?? {}) as { address?: string; city?: string; postalCode?: string; notes?: string }
-  const address = [shipping.address, shipping.city, shipping.postalCode].filter(Boolean).join(', ')
-  const payment = ({ cash: 'Efectivo en local', transfer: 'Transferencia bancaria', transferencia: 'Transferencia bancaria' } as Record<string, string>)[order.paymentMethod] ?? order.paymentMethod
+  const shipping = (order.shipping ?? {}) as { method?: string; address?: string; city?: string; postalCode?: string; notes?: string }
+  const address = shipping.method === 'pickup' ? 'Retiro en el local' : [shipping.address, shipping.city, shipping.postalCode].filter(Boolean).join(', ')
+  const payment = ({ cash: 'Efectivo al retirar', transfer: 'Transferencia bancaria', transferencia: 'Transferencia bancaria', check: 'Cheque electrónico' } as Record<string, string>)[order.paymentMethod] ?? order.paymentMethod
   const subtotal = order.items.reduce((sum, item) => sum + item.subtotal, 0)
   const rows = order.items.map(item => {
     const variant = [item.selectedColor, item.selectedSize && `Talle ${item.selectedSize}`, item.selectedGender].filter(Boolean).join(' · ')
