@@ -10,9 +10,10 @@ export function escapeHtml(value: unknown) {
 }
 const money = (value: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(value)
 
-export type OrderEmailKind = 'approval' | 'shipped' | 'delivered'
+export type OrderEmailKind = 'created' | 'approval' | 'shipped' | 'delivered'
 
 const messages: Record<OrderEmailKind, { title: string; intro: string; footer: string }> = {
+  created: { title: 'Recibimos tu pedido', intro: 'Registramos tu pedido. Si todavía no nos lo enviaste por WhatsApp, hacelo para que confirmemos stock, pago y entrega.', footer: 'Este correo confirma que recibimos el pedido. Todavía no está aprobado ni cobrado.' },
   approval: { title: 'Tu compra fue aprobada', intro: 'Ya estamos preparando tu pedido.', footer: 'La aprobación del pedido no acredita el pago ni indica que ya fue despachado.' },
   shipped: { title: 'Tu pedido fue enviado', intro: 'Tu pedido ya fue despachado y está en camino a la dirección indicada.', footer: 'Este aviso confirma el despacho. La entrega todavía está pendiente.' },
   delivered: { title: 'Tu pedido fue entregado', intro: 'Registramos la entrega de tu pedido. ¡Gracias por elegir NEZHA!', footer: 'Si no recibiste tu pedido o tenés alguna consulta, comunicate con la tienda.' },
@@ -20,7 +21,7 @@ const messages: Record<OrderEmailKind, { title: string; intro: string; footer: s
 
 export function buildApprovalEmail(order: ApprovalOrder) { return buildOrderStatusEmail(order, 'approval') }
 
-export function buildOrderStatusEmail(order: ApprovalOrder, kind: OrderEmailKind) {
+export function buildOrderStatusEmail(order: ApprovalOrder, kind: OrderEmailKind, options: { whatsappUrl?: string } = {}) {
   const message = messages[kind]
   const name = order.customerName || order.user?.name || 'Cliente'
   const email = order.customerEmail || order.user?.email || ''
@@ -41,8 +42,9 @@ export function buildOrderStatusEmail(order: ApprovalOrder, kind: OrderEmailKind
     ...order.items.map(item => `${item.productName} | ${[item.selectedColor, item.selectedSize, item.selectedGender].filter(Boolean).join(' / ')} | SKU ${item.variantSku || '—'} | ${item.quantity} x ${money(item.unitPrice)} = ${money(item.subtotal)} (sin IVA)`),
     `Subtotal: ${money(subtotal)}`, ...(order.discountAmount ? [`Descuento ${order.couponCode}: -${money(order.discountAmount)}`] : []), `IVA: ${money(order.taxAmount)}`, `Envío: ${money(order.shippingCost)}`, `Total: ${money(order.total)}`,
     `Medio de pago: ${payment}`, `Entrega: ${address || 'A coordinar'}`, shipping.notes ? `Notas: ${shipping.notes}` : '',
+    options.whatsappUrl ? `Envianos tu pedido por WhatsApp: ${options.whatsappUrl}` : '',
     message.footer, 'Gracias por comprar en NEZHA.',
   ].filter(Boolean).join('\n')
-  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033"><main style="max-width:640px;margin:auto;background:white;padding:28px"><p style="color:#0891b2;font-weight:bold">NEZHA SPORTS</p><h1 style="font-size:26px">${escapeHtml(heading)}</h1><p>Hola ${escapeHtml(name)}. ${escapeHtml(message.intro)}</p><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th align="left">Producto</th><th>Cant.</th><th>Unitario sin IVA</th><th>Subtotal sin IVA</th></tr></thead><tbody>${rows}</tbody></table><p>Productos: ${money(subtotal)}<br>${order.discountAmount ? `Descuento ${escapeHtml(order.couponCode)}: -${money(order.discountAmount)}<br>` : ''}IVA: ${money(order.taxAmount)}<br>Envío: ${money(order.shippingCost)}</p><p style="font-size:22px"><strong>Total: ${money(order.total)}</strong></p><h2 style="font-size:18px">Pago y entrega</h2><p>Medio de pago: ${escapeHtml(payment)}<br>Entrega: ${escapeHtml(address || 'A coordinar')}</p>${shipping.notes ? `<p>Notas: ${escapeHtml(shipping.notes)}</p>` : ''}<p style="font-size:12px;color:#64748b">${escapeHtml(message.footer)}</p><p>Gracias por comprar en NEZHA.</p></main></body></html>`
+  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033"><main style="max-width:640px;margin:auto;background:white;padding:28px"><p style="color:#0891b2;font-weight:bold">NEZHA SPORTS</p><h1 style="font-size:26px">${escapeHtml(heading)}</h1><p>Hola ${escapeHtml(name)}. ${escapeHtml(message.intro)}</p><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th align="left">Producto</th><th>Cant.</th><th>Unitario sin IVA</th><th>Subtotal sin IVA</th></tr></thead><tbody>${rows}</tbody></table><p>Productos: ${money(subtotal)}<br>${order.discountAmount ? `Descuento ${escapeHtml(order.couponCode)}: -${money(order.discountAmount)}<br>` : ''}IVA: ${money(order.taxAmount)}<br>Envío: ${money(order.shippingCost)}</p><p style="font-size:22px"><strong>Total: ${money(order.total)}</strong></p><h2 style="font-size:18px">Pago y entrega</h2><p>Medio de pago: ${escapeHtml(payment)}<br>Entrega: ${escapeHtml(address || 'A coordinar')}</p>${shipping.notes ? `<p>Notas: ${escapeHtml(shipping.notes)}</p>` : ''}${options.whatsappUrl ? `<p style="margin:24px 0"><a href="${escapeHtml(options.whatsappUrl)}" style="background:#25D366;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold">Enviar pedido por WhatsApp</a></p>` : ''}<p style="font-size:12px;color:#64748b">${escapeHtml(message.footer)}</p><p>Gracias por comprar en NEZHA.</p></main></body></html>`
   return { to: [email], subject: heading, html, text }
 }

@@ -187,7 +187,11 @@ export class OrdersService {
           items: true,
         },
       })
-      await tx.activityLog.create({ data: { userId: user?.id ?? account?.id, action: 'Creacion de pedido', entity: 'order', metadata: { orderId: order.id, code } } })
+      await tx.activityLog.create({ data: { userId: user?.id ?? account?.id, action: 'Creación de pedido', entity: 'order', metadata: { orderId: order.id, code } } })
+      // Confirmación al comprador: se envía desde la misma cola de correos que los avisos de estado.
+      const storeWhatsapp = String(settings?.whatsappNumber ?? '').replace(/\D/g, '')
+      const whatsappUrl = storeWhatsapp ? `https://wa.me/${storeWhatsapp}?text=${encodeURIComponent(`¡Hola NEZHA! Quiero finalizar mi pedido *${code}*.`)}` : undefined
+      await tx.orderApprovalEmail.create({ data: { orderId: order.id, kind: 'created', payload: buildOrderStatusEmail(order as any, 'created', { whatsappUrl }) as unknown as Prisma.InputJsonValue } })
       if (request) await tx.checkoutRequest.update({ where: { keyHash: request.keyHash }, data: { orderId: order.id } })
       return { order, account }
     })
