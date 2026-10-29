@@ -1,11 +1,21 @@
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import { json } from 'express'
+import helmet from 'helmet'
 import { AppModule } from './app.module'
+import { assertStrongJwtSecret, rateLimit } from './security'
 
 async function bootstrap() {
+  assertStrongJwtSecret()
   const app = await NestFactory.create(AppModule, { bodyParser: false })
-  app.use(json({ limit: '25mb' }))
+  const server = app.getHttpAdapter().getInstance()
+  server.disable('x-powered-by')
+  server.set('trust proxy', 1)
+  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
+  // Solo la carga de productos del admin (fotos, Excel) necesita cuerpos grandes; el resto, 200 KB.
+  app.use('/api/products', json({ limit: '25mb' }))
+  app.use(json({ limit: '200kb' }))
+  app.use(rateLimit)
   app.setGlobalPrefix('api')
   const configuredOrigins = (process.env.CLIENT_URL || 'http://localhost:3000')
     .split(',')

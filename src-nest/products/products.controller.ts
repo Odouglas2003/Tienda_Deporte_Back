@@ -33,7 +33,8 @@ export class ProductsController {
 
   @Get() async list(@Req() req: any, @Query() query: any) {
     const products = await this.products.list(query)
-    return (await this.canSeeWholesale(req)) ? products : products.map((product) => this.publicView(product))
+    // El público no ve productos desactivados ni precios mayoristas.
+    return (await this.canSeeWholesale(req)) ? products : products.filter((product) => product.active).map((product) => this.publicView(product))
   }
   @Get(':id') async get(@Req() req: any, @Param('id') id: string) {
     const product = await this.products.get(id)

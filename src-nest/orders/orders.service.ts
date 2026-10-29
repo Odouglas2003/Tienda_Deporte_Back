@@ -81,6 +81,7 @@ export class OrdersService {
     if (createAccount && password.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
     if (createAccount && await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado. Iniciá sesión para comprar con tu cuenta.')
     if (!Array.isArray(payload.items) || !payload.items.length) throw new BadRequestException('El pedido debe tener productos')
+    if (payload.items.length > 100) throw new BadRequestException('El pedido puede tener hasta 100 productos distintos')
     if (!['transfer', 'transferencia', 'cash', 'check'].includes(payload.paymentMethod)) throw new BadRequestException('Seleccioná un medio de pago válido')
     if (payload.paymentMethod === 'check' && !(user?.accountType === 'mayorista' && user.approved)) throw new BadRequestException('El cheque electrónico está disponible solo para mayoristas aprobados')
 

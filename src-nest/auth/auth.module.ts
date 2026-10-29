@@ -8,7 +8,7 @@ import { AuthGuard } from './auth.guard'
 import { RolesGuard } from './roles.guard'
 
 @Module({
-  imports: [ConfigModule, JwtModule.registerAsync({ imports: [ConfigModule], inject: [ConfigService], useFactory: (config: ConfigService) => ({ secret: config.get<string>('JWT_SECRET', 'change-this-secret'), signOptions: { expiresIn: config.get<string>('JWT_EXPIRES_IN', '7d') as any } }) })],
+  imports: [ConfigModule, JwtModule.registerAsync({ imports: [ConfigModule], inject: [ConfigService], useFactory: (config: ConfigService) => ({ secret: config.get<string>('JWT_SECRET') || 'dev-only-insecure-secret-change-me', signOptions: { expiresIn: config.get<string>('JWT_EXPIRES_IN', '7d') as any } }) })],
   controllers: [AuthController],
   providers: [AuthService, AuthGuard, RolesGuard, Reflector],
   exports: [AuthService, AuthGuard, RolesGuard, JwtModule],
