@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev:nest": "nest start --watch",
     "start:nest": "prisma migrate deploy && node dist-nest/main.js",
+    "build": "nest build",
     "build:nest": "nest build",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
