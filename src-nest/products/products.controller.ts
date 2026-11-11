@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, NotFoundException, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import { PrismaService } from '../prisma.service'
 import { AuthGuard } from '../auth/auth.guard'
@@ -10,6 +10,23 @@ import { ProductsService } from './products.service'
 @Controller('products')
 export class ProductsController {
   constructor(private readonly products: ProductsService, private readonly jwt: JwtService, private readonly prisma: PrismaService) {}
+
+  private readonly restrictedBrandPattern = /\b(?:dribbling|simbra|hydro|hidro|sixzero|sensei|dunlop|reebok|double\s+fish)\b/i
+
+  private isPubliclyAllowed(product: any) {
+    return !this.restrictedBrandPattern.test(`${product?.brand ?? ''} ${product?.name ?? ''} ${product?.description ?? ''}`)
+  }
+
+  private async canManageCatalog(req: any) {
+    const header = String(req?.headers?.authorization ?? '')
+    if (!header.startsWith('Bearer ')) return false
+    try {
+      const auth: any = await this.jwt.verifyAsync(header.slice(7))
+      return ['admin', 'superAdmin', 'vendedor'].includes(auth?.role)
+    } catch {
+      return false
+    }
+  }
 
   /** Los precios mayoristas solo se exponen a mayoristas aprobados, vendedores y administradores. */
   private async canSeeWholesale(req: any) {
@@ -33,11 +50,13 @@ export class ProductsController {
 
   @Get() async list(@Req() req: any, @Query() query: any) {
     const products = await this.products.list(query)
+    const visibleProducts = (await this.canManageCatalog(req)) ? products : products.filter((product) => this.isPubliclyAllowed(product))
     // El público no ve productos desactivados ni precios mayoristas.
-    return (await this.canSeeWholesale(req)) ? products : products.filter((product) => product.active).map((product) => this.publicView(product))
+    return (await this.canSeeWholesale(req)) ? visibleProducts : visibleProducts.filter((product) => product.active).map((product) => this.publicView(product))
   }
   @Get(':id') async get(@Req() req: any, @Param('id') id: string) {
     const product = await this.products.get(id)
+    if (!(await this.canManageCatalog(req)) && !this.isPubliclyAllowed(product)) throw new NotFoundException('Producto no encontrado')
     return (await this.canSeeWholesale(req)) ? product : this.publicView(product)
   }
   @UseGuards(AuthGuard, RolesGuard)
