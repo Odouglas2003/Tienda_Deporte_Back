@@ -6,7 +6,7 @@ import { AuthGuard } from './auth.guard'
 
 class LoginDto { @IsEmail() email!: string; @IsString() password!: string }
 class RegisterDto { @IsString() @MinLength(2) name!: string; @IsEmail() email!: string; @IsOptional() @IsString() password?: string; @IsString() phone!: string; @IsEnum(AccountType) accountType!: AccountType; @IsOptional() @IsString() businessName?: string; @IsOptional() @IsString() cuit?: string }
-class ChangePasswordDto { @IsString() @MinLength(6) password!: string }
+class ChangePasswordDto { @IsString() @MinLength(8) password!: string }
 class ForgotPasswordDto { @IsString() email!: string }
 class ResetPasswordDto { @IsString() token!: string; @IsString() password!: string }
 class UpdateProfileDto { @IsOptional() @IsString() name?: string; @IsOptional() @IsString() phone?: string; @IsOptional() @IsString() currentPassword?: string; @IsOptional() @IsString() newPassword?: string }

@@ -60,3 +60,14 @@ export function assertStrongJwtSecret() {
     throw new Error('JWT_SECRET falta o es débil. Configurá en Render un valor aleatorio de al menos 32 caracteres.')
   }
 }
+
+const COMMON_PASSWORDS = new Set(['12345678', '123456789', '1234567890', 'password', 'password1', 'contraseña', 'contrasena', 'qwerty123', 'abc12345', 'nezha123', 'nezhasport', 'futbol123', 'boca1234', 'river1234', 'argentina1'])
+
+/** Devuelve el problema de una contraseña nueva, o null si está bien. Las claves viejas siguen funcionando. */
+export function passwordProblem(password: unknown) {
+  if (typeof password !== 'string' || password.length < 8) return 'La contraseña debe tener al menos 8 caracteres'
+  if (password.length > 128) return 'La contraseña es demasiado larga'
+  if (!/[A-Za-zÁÉÍÓÚáéíóúÑñ]/.test(password) || !/\d/.test(password)) return 'La contraseña tiene que tener letras y números'
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) return 'Esa contraseña es muy común. Elegí otra'
+  return null
+}

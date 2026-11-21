@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service'
 import { AccountType, User, UserRole } from '@prisma/client'
 import * as bcrypt from 'bcryptjs'
 import { createHash, randomBytes } from 'node:crypto'
+import { passwordProblem } from '../security'
 
 type PublicUser = Omit<User, 'password'> & { assignedSellerName?: string }
 
@@ -39,17 +40,19 @@ export class AuthService {
     if (await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado')
     const wholesale = payload.accountType === AccountType.mayorista
     const rawPassword = wholesale ? randomBytes(16).toString('hex') : payload.password
-    if (!rawPassword || rawPassword.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
+    const problem = wholesale ? null : passwordProblem(rawPassword)
+    if (!rawPassword || problem) throw new BadRequestException(problem ?? 'Elegí una contraseña')
     const user = await this.prisma.user.create({ data: { ...payload, email, password: await bcrypt.hash(rawPassword, 10), role: UserRole.cliente, approved: !wholesale, approvalStatus: wholesale ? 'pending' : 'approved' } })
     await this.prisma.activityLog.create({ data: { userId: user.id, action: 'Registro de usuario', entity: 'user', metadata: { accountType: payload.accountType } } })
     return wholesale ? { user: this.serialize(user), token: null } : { user: this.serialize(user), token: this.token(user) }
   }
 
   async changeInitialPassword(userId: string, password: string) {
-    if (password.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
+    const problem = passwordProblem(password)
+    if (problem) throw new BadRequestException(problem)
     const user = await this.prisma.user.findUnique({ where: { id: userId } })
     if (!user || !user.mustChangePassword) throw new BadRequestException('La cuenta no requiere cambio inicial de contraseña')
-    const updated = await this.prisma.user.update({ where: { id: userId }, data: { password: await bcrypt.hash(password, 10), mustChangePassword: false } })
+    const updated = await this.prisma.user.update({ where: { id: userId }, data: { password: await bcrypt.hash(password, 10), mustChangePassword: false, sessionsValidFrom: new Date() } })
     await this.prisma.activityLog.create({ data: { userId, action: 'Cambio inicial de contrasena', entity: 'auth' } })
     return { user: this.serialize(updated), token: this.token(updated) }
   }
@@ -95,16 +98,20 @@ export class AuthService {
   }
 
   async resetPassword(token: string, password: string) {
-    if (typeof password !== 'string' || password.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
+    const problem = passwordProblem(password)
+    if (problem) throw new BadRequestException(problem)
     const tokenHash = createHash('sha256').update(String(token ?? '')).digest('hex')
     const saved = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } })
     if (!saved || saved.usedAt || saved.expiresAt < new Date()) throw new BadRequestException('El enlace venció o ya fue usado. Pedí uno nuevo.')
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: saved.userId }, data: { password: await bcrypt.hash(password, 10), mustChangePassword: false } }),
+      this.prisma.user.update({ where: { id: saved.userId }, data: { password: await bcrypt.hash(password, 10), mustChangePassword: false, sessionsValidFrom: new Date() } }),
       this.prisma.passwordResetToken.updateMany({ where: { userId: saved.userId, usedAt: null }, data: { usedAt: new Date() } }),
       this.prisma.activityLog.create({ data: { userId: saved.userId, action: 'Recuperación de contraseña', entity: 'auth' } }),
     ])
-    return { message: 'Listo, ya podés iniciar sesión con tu contraseña nueva.' }
+    // Quien acaba de probar que es dueño del correo entra directo, sin volver a escribir la clave.
+    const user = await this.prisma.user.findUnique({ where: { id: saved.userId }, include: { assignedSeller: { select: { name: true } } } })
+    const canEnter = user && user.active && !user.deletedAt && !(user.accountType === AccountType.mayorista && !user.approved)
+    return { message: 'Listo, tu contraseña quedó guardada.', ...(canEnter ? { session: this.createSession(user) } : {}) }
   }
 
   async me(userId: string) {
@@ -116,7 +123,7 @@ export class AuthService {
   async updateProfile(userId: string, payload: { name?: string; phone?: string; currentPassword?: string; newPassword?: string }) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } })
     if (!user || !user.active || user.deletedAt) throw new UnauthorizedException('Tu sesión venció. Volvé a iniciar sesión.')
-    const data: { name?: string; phone?: string; password?: string } = {}
+    const data: { name?: string; phone?: string; password?: string; sessionsValidFrom?: Date } = {}
     if (payload.name !== undefined) {
       const name = String(payload.name).trim()
       if (name.length < 2 || name.length > 120) throw new BadRequestException('Ingresá tu nombre completo')
@@ -128,12 +135,15 @@ export class AuthService {
       data.phone = phone.slice(0, 40)
     }
     if (payload.newPassword !== undefined && payload.newPassword !== '') {
-      if (String(payload.newPassword).length < 6) throw new BadRequestException('La contraseña nueva debe tener al menos 6 caracteres')
+      const problem = passwordProblem(String(payload.newPassword))
+      if (problem) throw new BadRequestException(problem)
       if (!(await bcrypt.compare(String(payload.currentPassword ?? ''), user.password))) throw new BadRequestException('La contraseña actual no es correcta')
       data.password = await bcrypt.hash(String(payload.newPassword), 10)
+      data.sessionsValidFrom = new Date()
     }
     const updated = await this.prisma.user.update({ where: { id: userId }, data, include: { assignedSeller: { select: { name: true } } } })
     await this.prisma.activityLog.create({ data: { userId, action: data.password ? 'Cambio de contraseña' : 'Actualización de perfil', entity: 'auth' } })
-    return this.serialize(updated)
+    // Al cambiar la clave se cierran las demás sesiones; este dispositivo recibe una sesión nueva.
+    return data.password ? { ...this.serialize(updated), sessionToken: this.token(updated) } : this.serialize(updated)
   }
 }

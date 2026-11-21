@@ -22,8 +22,10 @@ export class AuthGuard implements CanActivate {
 
     // El token solo identifica a la persona: el rol y el estado se leen siempre de la base,
     // para que una cuenta desactivada, eliminada o con otro rol pierda el acceso al instante.
-    const user = await this.prisma.user.findUnique({ where: { id: String(payload?.sub ?? '') }, select: { id: true, role: true, email: true, active: true, deletedAt: true } })
+    const user = await this.prisma.user.findUnique({ where: { id: String(payload?.sub ?? '') }, select: { id: true, role: true, email: true, active: true, deletedAt: true, sessionsValidFrom: true } })
     if (!user || !user.active || user.deletedAt) throw new UnauthorizedException('Tu sesión venció. Volvé a iniciar sesión.')
+    // Si la clave cambió después de abrir esta sesión, la sesión vieja deja de servir (por ejemplo, en un celular perdido).
+    if (user.sessionsValidFrom && Number(payload?.iat ?? 0) * 1000 < user.sessionsValidFrom.getTime() - 1000) throw new UnauthorizedException('Tu contraseña cambió. Volvé a iniciar sesión.')
 
     request.auth = { ...payload, sub: user.id, role: user.role, email: user.email }
     return true

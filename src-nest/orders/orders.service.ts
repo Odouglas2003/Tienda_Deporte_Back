@@ -8,6 +8,7 @@ import { buildOrderStatusEmail } from './order-approval.template'
 import { VatRatesService, productVatRate } from '../tax/vat-rates.service'
 import { lineTaxAmount, netLineAmount } from './order-pricing'
 import { assertCoupon, couponCode } from '../coupons/coupons.service'
+import { passwordProblem } from '../security'
 
 // La base está en San Pablo y el servidor en Render: cada consulta tarda, y el límite de 5 s por defecto
 // de Prisma cortaba las transacciones de pedidos a mitad de camino.
@@ -83,7 +84,8 @@ export class OrdersService {
     }
     const createAccount = !auth && customer.createAccount === true
     const password = String(customer.password ?? '')
-    if (createAccount && password.length < 6) throw new BadRequestException('La contraseña debe tener al menos 6 caracteres')
+    const passwordIssue = createAccount ? passwordProblem(password) : null
+    if (passwordIssue) throw new BadRequestException(passwordIssue)
     if (createAccount && await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('El email ya se encuentra registrado. Iniciá sesión para comprar con tu cuenta.')
     if (!Array.isArray(payload.items) || !payload.items.length) throw new BadRequestException('El pedido debe tener productos')
     if (payload.items.length > 100) throw new BadRequestException('El pedido puede tener hasta 100 productos distintos')
@@ -221,9 +223,17 @@ export class OrdersService {
       if (exists.status === mapped) return tx.order.findUnique({ where: { id }, include: orderDetails })
       if (['cancelado', 'rechazado', 'entregado'].includes(exists.status)) throw new BadRequestException('El pedido está cerrado y no se puede reabrir')
       if (exists.status === OrderStatus.enviado && mapped !== OrderStatus.entregado) throw new BadRequestException('Un pedido despachado solo puede pasar a entregado; las devoluciones requieren revisar la mercadería')
+      if (mapped === OrderStatus.reservado) throw new BadRequestException('Las reservas se crean desde Reservas, no cambiando el estado de un pedido')
+      const fromReservation = exists.status === OrderStatus.reservado
+      if (fromReservation && mapped !== OrderStatus.en_preparacion && mapped !== OrderStatus.cancelado) {
+        throw new BadRequestException('Una reserva pasa a "En preparación" cuando llega la mercadería, o se cancela')
+      }
       const changed = await tx.order.updateMany({ where: { id, status: exists.status }, data: { status: mapped as OrderStatus } })
       if (!changed.count) throw new ConflictException('El pedido cambió. Recargá antes de actualizarlo.')
-      if (mapped === OrderStatus.cancelado || mapped === OrderStatus.rechazado) {
+      // Llegó la mercadería de una reserva: recién ahora se descuenta el stock que el admin ya cargó.
+      if (fromReservation && mapped === OrderStatus.en_preparacion) await this.takeReservedStock(tx, exists.items)
+      // Una reserva nunca descontó stock, así que al cancelarla no hay nada que reponer.
+      if (!fromReservation && (mapped === OrderStatus.cancelado || mapped === OrderStatus.rechazado)) {
         const productIds = [...new Set(exists.items.map(item => item.productId))].sort()
         for (const productId of productIds) {
           const product = await tx.product.findUnique({ where: { id: productId } })
@@ -246,7 +256,7 @@ export class OrdersService {
       }
       const order = await tx.order.findUniqueOrThrow({ where: { id }, include: orderDetails })
       // One durable notification per order and milestone, committed with the new status.
-      const kind = mapped === OrderStatus.en_preparacion ? 'approval' : mapped === OrderStatus.listo ? 'ready' : mapped === OrderStatus.enviado ? 'shipped' : mapped === OrderStatus.entregado ? 'delivered' : null
+      const kind = mapped === OrderStatus.en_preparacion ? (fromReservation ? 'arrived' : 'approval') : mapped === OrderStatus.listo ? 'ready' : mapped === OrderStatus.enviado ? 'shipped' : mapped === OrderStatus.entregado ? 'delivered' : null
       if (kind) {
         await tx.orderApprovalEmail.upsert({
           where: { orderId_kind: { orderId: id, kind } }, update: {},
@@ -258,6 +268,85 @@ export class OrdersService {
       }
       await tx.activityLog.create({ data: { userId: actorId, action: 'Cambio de estado de pedido', entity: 'order', metadata: { orderId: id, previousStatus: exists.status, status: mapped } } })
       return tx.order.findUniqueOrThrow({ where: { id }, include: orderDetails })
+    }, ORDER_TX_OPTIONS)
+  }
+
+  /** Descuenta el stock de una reserva cuando llega la mercadería. Si todavía no está cargado, avisa y no cambia nada. */
+  private async takeReservedStock(tx: Prisma.TransactionClient, items: Array<{ productId: string; productName: string; variantSku: string | null; quantity: number }>) {
+    const productIds = [...new Set(items.map((item) => item.productId))].sort()
+    for (const productId of productIds) {
+      const product = await tx.product.findUnique({ where: { id: productId } })
+      if (!product || product.deletedAt) throw new ConflictException('Un producto de la reserva ya no existe en el catálogo')
+      const variants = Array.isArray(product.variants) ? (product.variants as Array<any>).map((variant) => ({ ...variant })) : []
+      const lines = items.filter((item) => item.productId === productId)
+      const quantity = lines.reduce((sum, item) => sum + item.quantity, 0)
+      if (product.stock < quantity) throw new ConflictException(`Todavía no hay stock de ${product.name}. Cargá el stock que llegó en Productos y volvé a intentar.`)
+      for (const item of lines) {
+        if (!variants.length) continue
+        const variant = variants.find((candidate) => candidate.sku === item.variantSku)
+        if (!variant) throw new ConflictException(`La variante reservada de ${product.name} ya no existe. Revisá el producto.`)
+        if (Number(variant.stock) < item.quantity) throw new ConflictException(`Todavía no hay stock de ${product.name} (${[variant.color, variant.size].filter(Boolean).join(' / ')}). Cargá el stock que llegó y volvé a intentar.`)
+        variant.stock = Number(variant.stock) - item.quantity
+      }
+      const taken = await tx.product.updateMany({
+        where: { id: productId, stock: product.stock, updatedAt: product.updatedAt, variants: { equals: product.variants as Prisma.InputJsonValue } },
+        data: { stock: { decrement: quantity }, variants: variants as Prisma.InputJsonValue },
+      })
+      if (!taken.count) throw new ConflictException('El stock cambió mientras guardabas. Volvé a intentar.')
+    }
+  }
+
+  /**
+   * Reserva hecha por el admin para un cliente que pidió un producto sin stock.
+   * Queda como pedido "Reservado" sin descontar stock y le llega un mail al cliente.
+   */
+  async createReservation(payload: any, actorId: string) {
+    const text = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : ''
+    const customerName = text(payload?.customerName, 120)
+    const email = text(payload?.customerEmail, 160).toLowerCase()
+    const phone = text(payload?.customerPhone, 40)
+    const notes = text(payload?.notes, 500)
+    const quantity = Number(payload?.quantity)
+    if (customerName.length < 2) throw new BadRequestException('Poné el nombre de quien reserva')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Poné un email válido: ahí le avisamos de la reserva')
+    if (phone && phone.replace(/\D/g, '').length < 8) throw new BadRequestException('El teléfono no parece válido')
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500) throw new BadRequestException('La cantidad tiene que ser un número entero entre 1 y 500')
+    const paymentMethod = ['transfer', 'cash'].includes(payload?.paymentMethod) ? payload.paymentMethod : 'cash'
+
+    const product = await this.prisma.product.findFirst({ where: { id: String(payload?.productId ?? ''), deletedAt: null } })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+    const variants = Array.isArray(product.variants) ? product.variants as Array<any> : []
+    const variant = variants.length ? variants.find((candidate) => candidate.sku === payload?.variantSku) : null
+    if (variants.length && !variant) throw new BadRequestException('Elegí el talle o color que reserva')
+
+    const buyer = await this.prisma.user.findUnique({ where: { email } })
+    const knownBuyer = buyer && buyer.active && !buyer.deletedAt ? buyer : null
+    const isWholesaleBuyer = Boolean(knownBuyer?.accountType === 'mayorista' && knownBuyer.approved)
+    const settings = await this.prisma.settings.findFirst()
+    const generalTaxRate = (await this.vatRates.getGeneralRate(Number(settings?.taxPercentage))).rate
+    const rate = productVatRate(Number(product.tax), generalTaxRate)
+    const discount = Math.min(100, Math.max(0, Number(product.discount) || 0))
+    const listPrice = isWholesaleBuyer
+      ? Number(variant?.priceWholesale ?? product.priceWholesale)
+      : Math.round(Number(variant?.priceRetail ?? product.priceRetail) * (1 - discount / 100) * 100) / 100
+    const subtotal = netLineAmount(listPrice, quantity, rate, isWholesaleBuyer)
+    const taxAmount = lineTaxAmount(listPrice, quantity, rate, isWholesaleBuyer)
+    const total = Math.round((subtotal + taxAmount) * 100) / 100
+    const code = `RES-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${randomUUID().slice(0, 6).toUpperCase()}`
+
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
+        data: {
+          code, status: OrderStatus.reservado, userId: knownBuyer?.id, customerName, customerEmail: email, sellerId: knownBuyer?.assignedSellerId,
+          items: { create: [{ productId: product.id, productName: product.name, image: variant?.image || product.images[0] || '', variantSku: variant?.sku ?? '', selectedColor: variant?.color ?? '', selectedSize: variant?.size ?? '', selectedGender: variant?.gender ?? '', quantity, unitPrice: Math.round((subtotal / quantity) * 100) / 100, subtotal }] },
+          total, taxAmount, shippingCost: 0, paymentMethod,
+          shipping: { method: 'pickup', address: '', city: '', postalCode: '', phone, notes, reservation: true },
+        },
+        include: orderDetails,
+      })
+      await tx.orderApprovalEmail.create({ data: { orderId: order.id, kind: 'reserved', payload: buildOrderStatusEmail(order as any, 'reserved') as unknown as Prisma.InputJsonValue } })
+      await tx.activityLog.create({ data: { userId: actorId, action: 'Reserva de producto', entity: 'order', metadata: { orderId: order.id, code, productId: product.id, quantity } } })
+      return order
     }, ORDER_TX_OPTIONS)
   }
 }

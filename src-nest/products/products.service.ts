@@ -132,6 +132,16 @@ export class ProductsService {
     return this.get(id)
   }
 
+  /** Oferta general: pone el mismo % de descuento a todos los productos (0 quita todas las ofertas). */
+  async discountAll(rawPercent: unknown, actorId?: string) {
+    const percent = Number(rawPercent)
+    if (!Number.isFinite(percent) || percent < 0 || percent > 90) throw new BadRequestException('El descuento tiene que ser un número entre 0 y 90.')
+    const rounded = Math.round(percent * 100) / 100
+    const result = await this.prisma.product.updateMany({ where: { deletedAt: null }, data: { discount: rounded } })
+    await this.prisma.activityLog.create({ data: { userId: actorId ?? null, action: rounded ? `Oferta general del ${rounded}%` : 'Quitar ofertas a todos los productos', entity: 'product', metadata: { percent: rounded, count: result.count } } })
+    return { updatedCount: result.count, percent: rounded }
+  }
+
   async bulk(rows: any) {
     if (!Array.isArray(rows) || !rows.length || rows.length > 100 || new Set(rows.map(row => row?.id)).size !== rows.length) throw new BadRequestException('Seleccioná entre 1 y 100 productos diferentes.')
     return this.prisma.$transaction(async tx => {

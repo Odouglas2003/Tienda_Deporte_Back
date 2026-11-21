@@ -73,5 +73,8 @@ export class ProductsController {
   @Post('bulk') bulk(@Body() body: any) { return this.products.bulk(body?.rows) }
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.admin, UserRole.superAdmin)
+  @Post('discount-all') discountAll(@Req() req: any, @Body() body: any) { return this.products.discountAll(body?.percent, req.auth?.sub) }
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.admin, UserRole.superAdmin)
   @Put(':id') update(@Param('id') id: string, @Body() body: any) { return this.products.update(id, body) }
 }

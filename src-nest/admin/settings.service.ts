@@ -76,6 +76,8 @@ export class SettingsService {
     if (body.automaticMessages && typeof body.automaticMessages === 'object') data.automaticMessages = body.automaticMessages as Prisma.InputJsonValue
     if (Array.isArray(body.navigationBrands)) data.navigationBrands = normalizeBrands(body.navigationBrands)
     if (Array.isArray(body.navigationDisciplines)) data.navigationDisciplines = body.navigationDisciplines as Prisma.InputJsonValue
+    // Productos elegidos para la portada, en orden: el primero va grande y los otros dos abajo.
+    if (Array.isArray(body.heroProductIds)) data.heroProductIds = Array.from(new Set(body.heroProductIds.filter((item): item is string => typeof item === 'string' && item.length > 0 && item.length < 60))).slice(0, 3)
 
     const current = await this.prisma.settings.findFirst()
     if (current) {

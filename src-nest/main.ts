@@ -14,6 +14,7 @@ async function bootstrap() {
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
   // Solo la carga de productos del admin (fotos, Excel) necesita cuerpos grandes; el resto, 200 KB.
   app.use('/api/products', json({ limit: '25mb' }))
+  app.use('/api/announcements', json({ limit: '4mb' }))
   app.use(json({ limit: '200kb' }))
   app.use(rateLimit)
   app.setGlobalPrefix('api')

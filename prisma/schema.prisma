@@ -32,6 +32,7 @@ enum OrderStatus {
   rechazado
   en_preparacion @map("en preparacion")
   listo
+  reservado
   enviado
   entregado
   cancelado
@@ -56,6 +57,8 @@ model User {
   assignedSeller      User?          @relation("SellerClients", fields: [assignedSellerId], references: [id])
   assignedClients     User[]         @relation("SellerClients")
   mustChangePassword  Boolean        @default(false)
+  /// Las sesiones abiertas antes de esta fecha dejan de valer (cambio de clave, cuenta eliminada).
+  sessionsValidFrom   DateTime?
   active              Boolean        @default(true)
   phone               String         @default("")
   cuit                String         @default("")
@@ -198,6 +201,7 @@ model Settings {
   automaticMessages Json?
   navigationBrands  Json?
   navigationDisciplines Json?
+  heroProductIds    String[] @default([])
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
@@ -261,4 +265,21 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@index([userId, createdAt])
+}
+
+/// Noticias o avisos que la tienda muestra en una ventana al entrar. Solo una está activa a la vez.
+model Announcement {
+  id          String   @id @default(cuid())
+  title       String
+  body        String   @default("")
+  imageData   String   @default("")
+  buttonLabel String   @default("")
+  buttonUrl   String   @default("")
+  theme       String   @default("oscuro")
+  layout      String   @default("arriba")
+  active      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([active, updatedAt])
 }

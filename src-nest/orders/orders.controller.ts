@@ -13,6 +13,10 @@ export class OrdersController {
   @Get() list(@Req() req: any) { return this.orders.list(req.auth) }
   @UseGuards(AuthGuard)
   @Post() create(@Req() req: any, @Body() body: any) { return this.orders.create(req.auth, body) }
+  @Post('reservations')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.admin, UserRole.superAdmin)
+  createReservation(@Req() req: any, @Body() body: any) { return this.orders.createReservation(body, req.auth.sub) }
   @Patch(':id/status')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.vendedor, UserRole.admin, UserRole.superAdmin)
