@@ -22,7 +22,7 @@ function fixture(user=null) {
   return {service:new OrdersService(prisma,null,{getGeneralRate:async()=>({rate:21})}),prisma,tx,orders,getProduct:()=>db}
 }
 async function main(){
-  let f=fixture();const {order}=await f.service.create(null,clone(payload));assert.equal(order.total,108.9);assert.equal(order.items[0].image,product.variants[0].image);assert.equal(order.items[0].selectedColor,'Negro');assert.equal(f.getProduct().stock,1);assert.equal(f.getProduct().variants[0].stock,1)
+  let f=fixture();const {order}=await f.service.create(null,clone(payload));assert.equal(order.total,90);assert.equal(Math.round((order.items[0].subtotal+order.taxAmount)*100)/100,90);assert.equal(order.items[0].image,product.variants[0].image);assert.equal(order.items[0].selectedColor,'Negro');assert.equal(f.getProduct().stock,1);assert.equal(f.getProduct().variants[0].stock,1)
   f=fixture();const results=await Promise.allSettled([f.service.create(null,clone(payload)),f.service.create(null,clone(payload))]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(f.orders.length,1);assert.equal(f.getProduct().stock,1);assert.equal(f.getProduct().variants[0].stock,1);assert.match(results.find(r=>r.status==='rejected').reason.message,/stock o el precio cambió/)
   f=fixture();await assert.rejects(()=>f.service.create(null,{...clone(payload),paymentMethod:'check'}),/mayoristas aprobados/);assert.equal(f.orders.length,0)
   await assert.rejects(()=>f.service.create(null,{...clone(payload),paymentMethod:'inventado'}),/medio de pago válido/)

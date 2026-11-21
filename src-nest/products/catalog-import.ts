@@ -16,7 +16,7 @@ export function catalogNumber(value: unknown): number | null {
 
 export function catalogChanges(before: any, after: any): ImportChange[] {
   const result: ImportChange[] = []
-  const fields = { name: 'Nombre', description: 'Descripción', category: 'Categoría', brand: 'Marca', subcategory: 'Disciplina', priceRetail: 'Minorista sin IVA', priceWholesale: 'Mayorista sin IVA', stock: 'Stock total', tax: 'IVA' }
+  const fields = { name: 'Nombre', description: 'Descripción', category: 'Categoría', brand: 'Marca', subcategory: 'Disciplina', priceRetail: 'Minorista (con IVA)', priceWholesale: 'Mayorista sin IVA', stock: 'Stock total', tax: 'IVA' }
   for (const [key, label] of Object.entries(fields)) {
     if (after[key] !== undefined && before?.[key] !== after[key]) result.push({ field: label, before: before?.[key] ?? null, after: after[key] })
   }

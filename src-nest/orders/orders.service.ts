@@ -6,6 +6,7 @@ import * as bcrypt from 'bcryptjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { buildOrderStatusEmail } from './order-approval.template'
 import { VatRatesService, productVatRate } from '../tax/vat-rates.service'
+import { lineTaxAmount, netLineAmount } from './order-pricing'
 import { assertCoupon, couponCode } from '../coupons/coupons.service'
 
 // La base está en San Pablo y el servidor en Render: cada consulta tarda, y el límite de 5 s por defecto
@@ -107,6 +108,10 @@ export class OrdersService {
     const map = new Map(products.map((product) => [product.id, product]))
     const variantsByProduct = new Map(products.map((product) => [product.id, Array.isArray(product.variants) ? (product.variants as Array<any>).map((variant) => ({ ...variant })) : []]))
     const requestedStock = new Map<string, number>()
+    const settings = await this.prisma.settings.findFirst()
+    const generalTaxRate = (await this.vatRates.getGeneralRate(Number(settings?.taxPercentage))).rate
+    const isWholesaleBuyer = Boolean(user?.accountType === 'mayorista' && user.approved)
+    const listPrices: number[] = []
     const items = payload.items.map((item: any) => {
       const product = map.get(item.product)
       const quantity = Number(item.quantity)
@@ -135,27 +140,28 @@ export class OrdersService {
       const wholesalePrice = variant?.priceWholesale ?? product.priceWholesale
       const discount = Number(product.discount)
       const retailDiscount = Number.isFinite(discount) ? Math.min(100, Math.max(0, discount)) : 0
-      const unitPrice = user?.accountType === 'mayorista' && user.approved
+      // El minorista se carga con IVA incluido: guardamos la parte sin IVA para que neto + IVA dé el precio publicado.
+      const listPrice = isWholesaleBuyer
         ? wholesalePrice
         : Math.round(retailPrice * (1 - retailDiscount / 100) * 100) / 100
-      return { productId: product.id, productName: product.name, image: variant?.image || product.images[0] || '', variantSku: variant?.sku ?? variantSku, selectedColor: selectedColor || variant?.color || '', selectedSize: selectedSize || variant?.size || '', selectedGender: selectedGender || variant?.gender || '', quantity, unitPrice, subtotal: unitPrice * quantity }
+      const subtotal = netLineAmount(listPrice, quantity, productVatRate(Number(product.tax), generalTaxRate), isWholesaleBuyer)
+      listPrices.push(listPrice)
+      const unitPrice = Math.round((subtotal / quantity) * 100) / 100
+      return { productId: product.id, productName: product.name, image: variant?.image || product.images[0] || '', variantSku: variant?.sku ?? variantSku, selectedColor: selectedColor || variant?.color || '', selectedSize: selectedSize || variant?.size || '', selectedGender: selectedGender || variant?.gender || '', quantity, unitPrice, subtotal }
     })
-    const subtotal = items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0)
-    const settings = await this.prisma.settings.findFirst()
+    const subtotal = Math.round(items.reduce((sum: number, item: { subtotal: number }) => sum + item.subtotal, 0) * 100) / 100
     if (user?.accountType === 'mayorista' && user.approved && settings?.minWholesaleOrder && subtotal < settings.minWholesaleOrder) {
       throw new BadRequestException(`El pedido mayorista mínimo es de $${settings.minWholesaleOrder.toLocaleString('es-AR')}`)
     }
-    const generalTaxRate = (await this.vatRates.getGeneralRate(Number(settings?.taxPercentage))).rate
     const appliedCode = couponCode(payload.couponCode)
     const coupon = appliedCode ? await this.prisma.coupon.findUnique({ where: { code: appliedCode } }) : null
     if (appliedCode) assertCoupon(coupon, subtotal)
     const lineDiscount = (amount: number) => Math.round(amount * (coupon?.percent ?? 0)) / 100
     const discountAmount = Math.round(items.reduce((sum: number, item: { subtotal: number }) => sum + lineDiscount(item.subtotal), 0) * 100) / 100
-    const taxAmount = items.reduce((sum: number, item: { productId: string; subtotal: number }) => {
-      const productRate = Number(map.get(item.productId)?.tax)
-      const rate = productVatRate(productRate, generalTaxRate)
-      return sum + Math.round((item.subtotal - lineDiscount(item.subtotal)) * rate) / 100
-    }, 0)
+    const taxAmount = Math.round(items.reduce((sum: number, item: { productId: string; quantity: number }, index: number) => {
+      const rate = productVatRate(Number(map.get(item.productId)?.tax), generalTaxRate)
+      return sum + lineTaxAmount(listPrices[index], item.quantity, rate, isWholesaleBuyer, coupon?.percent ?? 0)
+    }, 0) * 100) / 100
     const total = Math.round((subtotal - discountAmount + taxAmount) * 100) / 100
     if (payload.expectedTotal !== undefined && (typeof payload.expectedTotal !== 'number' || !Number.isFinite(payload.expectedTotal) || Math.abs(payload.expectedTotal - total) >= 0.01)) {
       throw new ConflictException('El importe cambió. Actualizá el carrito y revisá el total antes de confirmar.')
