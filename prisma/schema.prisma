@@ -31,6 +31,7 @@ enum OrderStatus {
   aprobado
   rechazado
   en_preparacion @map("en preparacion")
+  listo
   enviado
   entregado
   cancelado

@@ -10,11 +10,12 @@ export function escapeHtml(value: unknown) {
 }
 const money = (value: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(value)
 
-export type OrderEmailKind = 'created' | 'approval' | 'shipped' | 'delivered'
+export type OrderEmailKind = 'created' | 'approval' | 'ready' | 'shipped' | 'delivered'
 
 const messages: Record<OrderEmailKind, { title: string; intro: string; footer: string }> = {
   created: { title: 'Recibimos tu pedido', intro: 'Registramos tu pedido. Si todavía no nos lo enviaste por WhatsApp, hacelo para que confirmemos stock, pago y entrega.', footer: 'Este correo confirma que recibimos el pedido. Todavía no está aprobado ni cobrado.' },
   approval: { title: 'Tu compra fue aprobada', intro: 'Ya estamos preparando tu pedido.', footer: 'La aprobación del pedido no acredita el pago ni indica que ya fue despachado.' },
+  ready: { title: 'Tu pedido está listo para retirar', intro: 'Tu pedido ya está preparado y listo. Podés pasar a retirarlo por el local o coordinar la entrega por WhatsApp.', footer: 'Si coordinaste un envío, te vamos a avisar cuando lo despachemos.' },
   shipped: { title: 'Tu pedido fue enviado', intro: 'Tu pedido ya fue despachado y está en camino a la dirección indicada.', footer: 'Este aviso confirma el despacho. La entrega todavía está pendiente.' },
   delivered: { title: 'Tu pedido fue entregado', intro: 'Registramos la entrega de tu pedido. ¡Gracias por elegir NEZHA!', footer: 'Si no recibiste tu pedido o tenés alguna consulta, comunicate con la tienda.' },
 }

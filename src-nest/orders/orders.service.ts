@@ -8,6 +8,10 @@ import { buildOrderStatusEmail } from './order-approval.template'
 import { VatRatesService, productVatRate } from '../tax/vat-rates.service'
 import { assertCoupon, couponCode } from '../coupons/coupons.service'
 
+// La base está en San Pablo y el servidor en Render: cada consulta tarda, y el límite de 5 s por defecto
+// de Prisma cortaba las transacciones de pedidos a mitad de camino.
+const ORDER_TX_OPTIONS = { maxWait: 10000, timeout: 20000 }
+
 const orderDetails = {
   user: { select: { id: true, name: true, email: true, accountType: true } },
   seller: { select: { id: true, name: true } },
@@ -195,7 +199,7 @@ export class OrdersService {
       await tx.orderApprovalEmail.create({ data: { orderId: order.id, kind: 'created', payload: buildOrderStatusEmail(order as any, 'created', { whatsappUrl }) as unknown as Prisma.InputJsonValue } })
       if (request) await tx.checkoutRequest.update({ where: { keyHash: request.keyHash }, data: { orderId: order.id } })
       return { order, account }
-    })
+    }, ORDER_TX_OPTIONS)
     return result.account ? { order: result.order, session: this.auth.createSession(result.account) } : { order: result.order }
   }
 
@@ -236,7 +240,7 @@ export class OrdersService {
       }
       const order = await tx.order.findUniqueOrThrow({ where: { id }, include: orderDetails })
       // One durable notification per order and milestone, committed with the new status.
-      const kind = mapped === OrderStatus.en_preparacion ? 'approval' : mapped === OrderStatus.enviado ? 'shipped' : mapped === OrderStatus.entregado ? 'delivered' : null
+      const kind = mapped === OrderStatus.en_preparacion ? 'approval' : mapped === OrderStatus.listo ? 'ready' : mapped === OrderStatus.enviado ? 'shipped' : mapped === OrderStatus.entregado ? 'delivered' : null
       if (kind) {
         await tx.orderApprovalEmail.upsert({
           where: { orderId_kind: { orderId: id, kind } }, update: {},
@@ -248,6 +252,6 @@ export class OrdersService {
       }
       await tx.activityLog.create({ data: { userId: actorId, action: 'Cambio de estado de pedido', entity: 'order', metadata: { orderId: id, previousStatus: exists.status, status: mapped } } })
       return tx.order.findUniqueOrThrow({ where: { id }, include: orderDetails })
-    })
+    }, ORDER_TX_OPTIONS)
   }
 }
