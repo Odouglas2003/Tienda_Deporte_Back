@@ -4,3 +4,6 @@ node_modules/
 .codex-*.log
 dist-nest/
 *.tsbuildinfo
+
+# Copias de datos de productos hechas antes de cambios masivos (no subir)
+backups/

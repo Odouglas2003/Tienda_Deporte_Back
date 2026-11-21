@@ -247,9 +247,11 @@ export class ProductsService {
           sku: existing?.sku ?? first.sku,
           name: baseProductName(first.row) || first.name,
           description: text(first.row?.description) || existing?.description || '',
-          category: first.category,
-          categories,
-          subcategory: text(first.row?.subcategory || first.row?.['style[0]']).toLowerCase() || existing?.subcategory || '',
+          // Los productos que ya existen conservan la categoría y el deporte (subcategoría) que se
+          // cargaron en la tienda: el Excel del proveedor solo los define para productos nuevos.
+          category: existing?.category || first.category,
+          categories: existing?.category ? existing.categories : categories,
+          subcategory: existing?.subcategory || text(first.row?.subcategory || first.row?.['style[0]']).toLowerCase() || '',
           brand: text(first.row?.brand) || existing?.brand || text(first.row?.inferred_brand) || '',
           priceRetail: Math.min(...variants.map((variant) => variant.priceRetail ?? existing?.priceRetail ?? 0)),
           priceWholesale: Math.min(...variants.map((variant) => variant.priceWholesale ?? existing?.priceWholesale ?? 0)),

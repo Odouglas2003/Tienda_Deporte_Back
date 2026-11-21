@@ -130,3 +130,17 @@ test('duplicate SKUs, fractional stock and changed review versions cannot be sav
   assert.equal(stale.errorCount, 1)
   assert.equal(f.saved(), undefined)
 })
+test('full import keeps the category and sport of existing products, but uses the Excel for new ones', async () => {
+  const cap = { ...structuredClone(existing), category: 'gorras deportivas', categories: ['gorras deportivas'], subcategory: 'Running, Urbano' }
+  const excelRow = (sku) => ({ ...row(sku, 'Negro', ''), category: 'bolsos y mochilas', 'style[0]': 'bolsos y mochilas' })
+  const updated = fixture(cap)
+  await updated.service.importCatalog([excelRow('A'), excelRow('B')])
+  assert.equal(updated.saved().category, 'gorras deportivas')
+  assert.deepEqual(updated.saved().categories, ['gorras deportivas'])
+  assert.equal(updated.saved().subcategory, 'Running, Urbano')
+  assert.equal(updated.saved().priceRetail, 200)
+  const created = fixture(null)
+  await created.service.importCatalog([{ ...excelRow('NUEVO'), title: 'Mochila Nueva' }])
+  assert.equal(created.saved().category, 'bolsos y mochilas')
+  assert.equal(created.saved().subcategory, 'bolsos y mochilas')
+})
