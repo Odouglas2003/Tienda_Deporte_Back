@@ -88,8 +88,38 @@ export class ProductsService {
     return product
   }
 
-  create(payload: any) {
-    return this.prisma.product.create({ data: { ...payload, categories: payload.categories ?? [payload.category], images: payload.images ?? [], tags: payload.tags ?? [] } })
+  /** Alta de un producto suelto desde el panel. Solo toma los campos conocidos. */
+  async create(payload: any) {
+    const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''
+    const amount = (value: unknown, label: string, integer = false) => {
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed) || parsed < 0 || (integer && !Number.isSafeInteger(parsed))) throw new BadRequestException(`${label} debe ser un número positivo${integer ? ' entero' : ''}.`)
+      return parsed
+    }
+    const list = (value: unknown) => Array.isArray(value) ? value.map(text).filter(Boolean) : []
+    const name = text(payload?.name), sku = text(payload?.sku), brand = text(payload?.brand), category = text(payload?.category)
+    if (!name || !sku || !brand || !category) throw new BadRequestException('Completá nombre, SKU, marca y al menos una categoría.')
+    if (text(payload?.sizeGuide).length > 5000) throw new BadRequestException('La guía de talles admite hasta 5000 caracteres.')
+    if (await this.prisma.product.findUnique({ where: { sku } })) throw new ConflictException(`Ya existe un producto con el SKU ${sku}.`)
+    const categories = Array.from(new Set([category, ...list(payload?.categories)]))
+    return this.prisma.product.create({
+      data: {
+        name, sku, brand, category, categories,
+        subcategory: text(payload?.subcategory),
+        description: text(payload?.description),
+        sizeGuide: text(payload?.sizeGuide),
+        priceRetail: amount(payload?.priceRetail, 'El precio minorista'),
+        priceWholesale: amount(payload?.priceWholesale, 'El precio mayorista'),
+        stock: amount(payload?.stock, 'El stock', true),
+        tax: payload?.tax === undefined ? 0 : amount(payload.tax, 'El IVA'),
+        images: list(payload?.images),
+        tags: list(payload?.tags),
+        colors: list(payload?.colors),
+        sizes: list(payload?.sizes),
+        featured: Boolean(payload?.featured),
+        active: payload?.active !== false,
+      },
+    })
   }
 
   async update(id: string, payload: any) {
