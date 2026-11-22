@@ -163,6 +163,10 @@ export class ProductsService {
     if (payload.sizeGuide !== undefined && (typeof payload.sizeGuide !== 'string' || payload.sizeGuide.length > 5000)) throw new BadRequestException('La guía de talles admite hasta 5000 caracteres.')
     const product = await this.get(id)
     const { expectedUpdatedAt, ...data } = payload
+    // Un producto sin precio no se publica (en la tienda saldría a $0).
+    const willBeActive = data.active ?? product.active
+    const retail = data.priceRetail ?? product.priceRetail
+    if (willBeActive && !(Number(retail) > 0)) throw new BadRequestException('Para publicar el producto cargale primero el precio minorista.')
     if (expectedUpdatedAt !== undefined && new Date(expectedUpdatedAt).getTime() !== product.updatedAt.getTime()) throw new ConflictException('El producto cambió mientras editabas. Cerrá y recargá la lista antes de guardar.')
     const changed = await this.prisma.product.updateMany({ where: { id, deletedAt: null, updatedAt: product.updatedAt }, data })
     if (!changed.count) throw new ConflictException('El stock o precio cambió. Recargá el producto antes de guardar.')

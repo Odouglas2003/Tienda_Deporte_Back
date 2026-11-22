@@ -56,7 +56,8 @@ export class ProductsController {
   }
   @Get(':id') async get(@Req() req: any, @Param('id') id: string) {
     const product = await this.products.get(id)
-    if (!(await this.canManageCatalog(req)) && !this.isPubliclyAllowed(product)) throw new NotFoundException('Producto no encontrado')
+    // Los productos ocultos (borradores o desactivados) solo los ven el admin y los vendedores, ni con el link directo.
+    if (!(await this.canManageCatalog(req)) && (!this.isPubliclyAllowed(product) || !product.active || product.deletedAt)) throw new NotFoundException('Producto no encontrado')
     return (await this.canSeeWholesale(req)) ? product : this.publicView(product)
   }
   @UseGuards(AuthGuard, RolesGuard)
