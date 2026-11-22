@@ -206,6 +206,8 @@ export class OrdersService {
       const storeWhatsapp = String(settings?.whatsappNumber ?? '').replace(/\D/g, '')
       const whatsappUrl = storeWhatsapp ? `https://wa.me/${storeWhatsapp}?text=${encodeURIComponent(`¡Hola NEZHA! Quiero finalizar mi pedido *${code}*.`)}` : undefined
       await tx.orderApprovalEmail.create({ data: { orderId: order.id, kind: 'created', payload: buildOrderStatusEmail(order as any, 'created', { whatsappUrl }) as unknown as Prisma.InputJsonValue } })
+      // Compró: el carrito guardado ya no es un carrito abandonado.
+      if (user) await tx.savedCart.deleteMany({ where: { userId: user.id } })
       if (request) await tx.checkoutRequest.update({ where: { keyHash: request.keyHash }, data: { orderId: order.id } })
       return { order, account }
     }, ORDER_TX_OPTIONS)
@@ -303,11 +305,24 @@ export class OrdersService {
    */
   async createReservation(payload: any, actorId: string) {
     const text = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : ''
-    const customerName = text(payload?.customerName, 120)
-    const email = text(payload?.customerEmail, 160).toLowerCase()
-    const phone = text(payload?.customerPhone, 40)
+    let customerName = text(payload?.customerName, 120)
+    let email = text(payload?.customerEmail, 160).toLowerCase()
+    let phone = text(payload?.customerPhone, 40)
     const notes = text(payload?.notes, 500)
     const quantity = Number(payload?.quantity)
+    // Mayorista: se busca su cuenta por CUIT/CUIL, la reserva queda en sus compras y con precio mayorista.
+    let wholesaleAccount: Awaited<ReturnType<typeof this.prisma.user.findFirst>> = null
+    if (payload?.buyerType === 'mayorista') {
+      const cuit = String(payload?.cuit ?? '').replace(/\D/g, '')
+      if (cuit.length !== 11) throw new BadRequestException('Poné el CUIT/CUIL del mayorista (11 números)')
+      const wholesalers = await this.prisma.user.findMany({ where: { accountType: 'mayorista', deletedAt: null } })
+      wholesaleAccount = wholesalers.find((user) => user.cuit.replace(/\D/g, '') === cuit) ?? null
+      if (!wholesaleAccount) throw new NotFoundException('No hay ningún mayorista registrado con ese CUIT/CUIL')
+      if (!wholesaleAccount.approved || !wholesaleAccount.active) throw new BadRequestException('Ese mayorista todavía no está aprobado o está inactivo')
+      customerName = wholesaleAccount.businessName || wholesaleAccount.name
+      email = wholesaleAccount.email
+      phone = phone || wholesaleAccount.phone
+    }
     if (customerName.length < 2) throw new BadRequestException('Poné el nombre de quien reserva')
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Poné un email válido: ahí le avisamos de la reserva')
     if (phone && phone.replace(/\D/g, '').length < 8) throw new BadRequestException('El teléfono no parece válido')
@@ -320,7 +335,7 @@ export class OrdersService {
     const variant = variants.length ? variants.find((candidate) => candidate.sku === payload?.variantSku) : null
     if (variants.length && !variant) throw new BadRequestException('Elegí el talle o color que reserva')
 
-    const buyer = await this.prisma.user.findUnique({ where: { email } })
+    const buyer = wholesaleAccount ?? await this.prisma.user.findUnique({ where: { email } })
     const knownBuyer = buyer && buyer.active && !buyer.deletedAt ? buyer : null
     const isWholesaleBuyer = Boolean(knownBuyer?.accountType === 'mayorista' && knownBuyer.approved)
     const settings = await this.prisma.settings.findFirst()

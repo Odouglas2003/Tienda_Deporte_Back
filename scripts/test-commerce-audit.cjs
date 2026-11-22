@@ -15,6 +15,7 @@ function fixture(user=null) {
     order:{create:async({data})=>{ const order={...data,status:'pendiente',id:'o'+orders.length,items:data.items.create};orders.push(order);return order }},
     activityLog:{create:async({data})=>{logs.push(data)}},
     orderApprovalEmail:{create:async()=>({})},
+    savedCart:{deleteMany:async()=>({count:0})},
   }
   const prisma={user:{findUnique:async()=>user},product:{findMany:async()=>[clone(db)]},settings:{findFirst:async()=>({taxPercentage:21,minWholesaleOrder:0})},
     $transaction:async fn=>{const previous=tail;let release;tail=new Promise(r=>release=r);await previous;const before=clone(db);const beforeOrders=clone(orders);try{return await fn(tx)}catch(e){db=before;orders.splice(0,orders.length,...beforeOrders);throw e}finally{release()}}

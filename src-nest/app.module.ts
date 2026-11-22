@@ -1,3 +1,4 @@
+import { CartsModule } from './carts/carts.module'
 import { AnnouncementsModule } from './announcements/announcements.module'
 import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
@@ -12,7 +13,7 @@ import { CommunicationsModule } from './communications/communications.module'
 import { CouponsModule } from './coupons/coupons.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, UsersModule, ProductsModule, OrdersModule, AdminModule, CommunicationsModule, CouponsModule, AnnouncementsModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, UsersModule, ProductsModule, OrdersModule, AdminModule, CommunicationsModule, CouponsModule, AnnouncementsModule, CartsModule],
   controllers: [HealthController],
 })
 export class AppModule {}

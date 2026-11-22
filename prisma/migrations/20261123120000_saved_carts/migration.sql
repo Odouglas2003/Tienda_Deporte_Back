@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS "SavedCart" (
+    "userId" TEXT NOT NULL,
+    "items" JSONB NOT NULL,
+    "itemCount" INTEGER NOT NULL DEFAULT 0,
+    "total" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "SavedCart_pkey" PRIMARY KEY ("userId"),
+    CONSTRAINT "SavedCart_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS "SavedCart_updatedAt_idx" ON "SavedCart"("updatedAt");
+
+ALTER TABLE "SavedCart" ENABLE ROW LEVEL SECURITY;

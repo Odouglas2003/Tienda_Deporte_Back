@@ -24,7 +24,10 @@ function fixture(initialStock) {
         return { count: 1 }
       },
     },
-    user: { findUnique: async ({ where }) => (where.id === 'admin' ? admin : null) },
+    user: {
+      findUnique: async ({ where }) => (where.id === 'admin' ? admin : null),
+      findMany: async () => [{ id: 'w1', name: 'Juan Club', businessName: 'Club Norte', email: 'club@example.com', cuit: '20-12345678-9', phone: '3519998888', accountType: 'mayorista', approved: true, active: true, deletedAt: null, assignedSellerId: 's1' }],
+    },
     settings: { findFirst: async () => ({ taxPercentage: 21 }) },
     order: {
       create: async ({ data }) => { const order = { ...data, id: 'o' + orders.length, items: data.items.create.map((item, index) => ({ ...item, id: 'i' + index })), deletedAt: null }; orders.push(order); return order },
@@ -87,6 +90,17 @@ async function main() {
   await assert.rejects(() => f.service.updateStatus(third.id, 'enviado', 'admin'), /Una reserva pasa/)
   await assert.rejects(() => f.service.createReservation({ productId: 'p1', quantity: 1, customerName: 'X Y', customerEmail: 'x@example.com' }, 'admin'), /Elegí el talle/)
   await assert.rejects(() => f.service.createReservation({ productId: 'p1', variantSku: 'PEL-5', quantity: 1, customerName: 'X Y', customerEmail: 'no-es-mail' }, 'admin'), /email válido/)
+
+  // 6. Mayorista por CUIT: queda en su cuenta, con su email y precio mayorista (8000 + IVA 21%).
+  f = fixture(0)
+  const wholesale = await f.service.createReservation({ productId: 'p1', variantSku: 'PEL-5', quantity: 1, buyerType: 'mayorista', cuit: '20123456789' }, 'admin')
+  assert.equal(wholesale.userId, 'w1')
+  assert.equal(wholesale.customerEmail, 'club@example.com')
+  assert.equal(wholesale.customerName, 'Club Norte')
+  assert.equal(wholesale.sellerId, 's1')
+  assert.equal(wholesale.total, 9680)
+  await assert.rejects(() => f.service.createReservation({ productId: 'p1', variantSku: 'PEL-5', quantity: 1, buyerType: 'mayorista', cuit: '20999999999' }, 'admin'), /Ningún mayorista|ningún mayorista/i)
+  await assert.rejects(() => f.service.createReservation({ productId: 'p1', variantSku: 'PEL-5', quantity: 1, buyerType: 'mayorista', cuit: '123' }, 'admin'), /11 números/)
 
   console.log('reservas ok')
 }

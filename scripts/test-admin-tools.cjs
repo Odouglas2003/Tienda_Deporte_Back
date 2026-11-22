@@ -35,6 +35,7 @@ function fixture(options = {}) {
         order: { create: async ({ data }) => { const order = { ...data, id: 'o1', items: data.items.create }; working.orders.push(order); return order } },
         activityLog: { create: async () => ({}) },
         orderApprovalEmail: { create: async () => ({}) },
+        savedCart: { deleteMany: async () => ({ count: 0 }) },
       }
       const result = await callback(tx)
       Object.assign(state, working)

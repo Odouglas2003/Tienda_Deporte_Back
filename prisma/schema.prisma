@@ -70,6 +70,7 @@ model User {
   sellerOrders        Order[]        @relation("SellerOrders")
   activityLogs        ActivityLog[]
   passwordResetTokens PasswordResetToken[]
+  savedCart           SavedCart?
 
   @@index([accountType, approvalStatus])
   @@index([role, active])
@@ -282,4 +283,17 @@ model Announcement {
   updatedAt   DateTime @updatedAt
 
   @@index([active, updatedAt])
+}
+
+/// Carrito de un cliente con sesión iniciada, para ver en el panel quién dejó productos sin comprar.
+model SavedCart {
+  userId    String   @id
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     Json
+  itemCount Int      @default(0)
+  total     Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([updatedAt])
 }
