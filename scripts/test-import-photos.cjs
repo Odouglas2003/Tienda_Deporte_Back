@@ -18,7 +18,7 @@ function fixture(product, conflict = false) {
     },
   } }
   const service = new ProductsService({
-    product: { findMany: async () => product ? [structuredClone(product)] : [], updateMany: async (args) => { if (args.data.active === false) { removed = args.where; return { count: 0 } } return tx.product.updateMany(args) } },
+    product: { createMany: async ({ data }) => { saved = { ...data[0], id: 'new' }; return { count: data.length } }, create: async ({ data }) => { saved = { ...data, id: 'new' }; return saved }, findMany: async () => product ? [structuredClone(product)] : [], updateMany: async (args) => { if (args.data.active === false) { removed = args.where; return { count: 0 } } return tx.product.updateMany(args) } },
     $transaction: async callback => callback(tx),
   })
   return { service, saved: () => saved, removed: () => removed }
@@ -143,4 +143,21 @@ test('full import keeps the category and sport of existing products, but uses th
   await created.service.importCatalog([{ ...excelRow('NUEVO'), title: 'Mochila Nueva' }])
   assert.equal(created.saved().category, 'bolsos y mochilas')
   assert.equal(created.saved().subcategory, 'bolsos y mochilas')
+})
+test('draft import links the billing code by barcode and adds only the missing colors, without duplicating the product', async () => {
+  const product = { id: 'p9', sku: '7790001', name: 'Remera Basica', brand: 'NEZHA', category: 'remeras', categories: ['remeras'], subcategory: '', active: true, deletedAt: null, updatedAt: new Date(), images: [], priceRetail: 900, priceWholesale: 700, stock: 3, variants: [{ sku: '7790001', color: 'Negro', size: 'S', stock: 3, priceRetail: 900, priceWholesale: 700 }] }
+  const f = fixture(product)
+  const rows = [
+    { rowNumber: 2, id: 'SYS 1/S/1', barcode: '7790001', title: 'Remera Basica', color: 'Negro', size: 'S' },
+    { rowNumber: 3, id: 'SYS 1/S/2', barcode: '', title: 'Remera Basica', color: 'Blanco', size: 'S' },
+    { rowNumber: 4, id: 'OTRO 5', barcode: '', title: 'Pelota Nueva' },
+  ]
+  const result = await f.service.importCatalog(rows, { mode: 'full', draft: true, dryRun: true })
+  assert.equal(result.errorCount, 0)
+  assert.equal(result.createdCount, 1, 'solo la pelota es nueva')
+  assert.equal(result.updatedCount, 1)
+  const update = result.plans.find((plan) => plan.kind === 'update')
+  assert.equal(update.sku, '7790001')
+  assert.match(String(update.changes.find((change) => /nuevos/.test(change.field)).after), /Blanco S/)
+  assert.equal(update.changes.find((change) => /vinculados/.test(change.field)).after, 1)
 })

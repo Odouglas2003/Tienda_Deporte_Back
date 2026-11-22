@@ -58,7 +58,44 @@ function baseProductName(row: any) {
   name = name.replace(new RegExp(COLOR_PATTERN_SOURCE, 'gi'), ' ')
   name = name.replace(GENDER_PATTERN, ' ')
   if (size) name = name.replace(new RegExp(`\\b(?:talle\\s*)?${size.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), ' ')
-  return name.replace(/\s*[-|/]\s*/g, ' ').replace(/\s+/g, ' ').trim()
+  return name
+    .replace(/\s*[-|/]\s*/g, ' ')
+    // Al sacar color y talle de "(MARINO, M)" pueden quedar restos como "( , )" o "(MARINO, )".
+    .replace(/\(\s*,\s*/g, '(').replace(/\s*,\s*\)/g, ')').replace(/\(\s*(?:,\s*)*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Todos los códigos con los que se reconoce una variante: su SKU y los alternativos (código del sistema, código de barras). */
+function variantCodes(variant: any): string[] {
+  return [variant?.sku, ...(Array.isArray(variant?.codes) ? variant.codes : [])].map((code) => cleanText(code)).filter(Boolean)
+}
+
+/** Códigos de una fila del Excel: el código principal y, si viene, el código de barras. */
+function rowCodes(row: any): string[] {
+  return Array.from(new Set([row?.id || row?.sku, row?.barcode].map((code) => cleanText(code)).filter(Boolean)))
+}
+
+/** Nombre comparable para reconocer el mismo modelo con otro código: sin tildes, sin paréntesis y sin la marca. */
+function sameModelKey(name: string, brandWords: Set<string>) {
+  return cleanText(name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((word) => word && !brandWords.has(word)).join(' ')
+}
+
+/**
+ * Busca la variante de una fila: primero por su código principal (único por talle/color) y recién después
+ * por el código de barras, que en algunos sistemas es el mismo para todos los talles del modelo.
+ */
+function findVariantForRow(variants: any[], row: any, color = '', size = '') {
+  const primary = cleanText(row?.id || row?.sku)
+  const barcode = cleanText(row?.barcode)
+  return variants.find((variant) => variantCodes(variant).includes(primary))
+    ?? (barcode ? variants.filter((variant) => variantCodes(variant).includes(barcode)).find((variant, _index, list) => list.length === 1 || sameCombo(variant, color, size)) : undefined)
+}
+
+function sameCombo(variant: any, color: string, size: string) {
+  const norm = (value: unknown) => cleanText(value).toLowerCase()
+  return norm(variant?.color) === norm(color) && norm(variant?.size) === norm(size) && Boolean(norm(color) || norm(size))
 }
 
 function variantGroupKey(row: any) {
@@ -199,29 +236,32 @@ export class ProductsService {
     const text = (value: unknown) => String(value ?? '').trim()
     const number = catalogNumber
 
+    const draft = options.draft === true
     const validRows: Array<{
       row: any
       rowNumber: number
       sku: string
       name: string
       category: string
-      priceRetail: number
-      priceWholesale: number
+      priceRetail: number | null
+      priceWholesale: number | null
     }> = []
 
     for (const [index, row] of rows.entries()) {
       const rowNumber = Number(row?.rowNumber) || index + 2
       const sku = text(row?.id || row?.sku)
       const name = text(row?.title || row?.name)
-      const category = text(row?.category || row?.google_product_category || row?.fb_product_category).toLowerCase()
+      const category = text(row?.category || row?.google_product_category || row?.fb_product_category).toLowerCase() || (draft ? 'sin-categoria' : '')
       const priceRetail = number(row?.price_retail ?? row?.price)
       const priceWholesale = number(row?.price_wholesale ?? row?.wholesale_price)
+      // En borrador el precio puede faltar (se completa después), pero si viene tiene que ser válido.
+      const badPrice = (price: number | null) => (price === null ? !draft : !Number.isFinite(price) || price < 0)
       const missing = [
         !sku && 'código/SKU',
         !name && 'nombre',
         !category && 'categoría',
-        (priceRetail === null || !Number.isFinite(priceRetail) || priceRetail < 0) && 'precio minorista válido',
-        (priceWholesale === null || !Number.isFinite(priceWholesale) || priceWholesale < 0) && 'precio mayorista válido',
+        badPrice(priceRetail) && 'precio minorista válido',
+        badPrice(priceWholesale) && 'precio mayorista válido',
       ].filter(Boolean)
 
       if (missing.length > 0) {
@@ -229,7 +269,7 @@ export class ProductsService {
         continue
       }
 
-      validRows.push({ row, rowNumber, sku, name, category, priceRetail: priceRetail as number, priceWholesale: priceWholesale as number })
+      validRows.push({ row, rowNumber, sku, name, category, priceRetail, priceWholesale })
     }
 
     const groups = new Map<string, typeof validRows>()
@@ -238,17 +278,47 @@ export class ProductsService {
       groups.set(key, [...(groups.get(key) ?? []), item])
     }
 
+    // Se lee el catálogo una sola vez y se indexa por código: con miles de filas, una consulta por
+    // producto tardaba demasiado (la base está en San Pablo y el servidor en Render).
+    const catalog = await this.prisma.product.findMany()
+    const bySku = new Map<string, typeof catalog>()
+    const addToIndex = (sku: unknown, product: typeof catalog[number]) => {
+      const key = text(sku)
+      if (!key) return
+      const list = bySku.get(key) ?? []
+      if (!list.includes(product)) list.push(product)
+      bySku.set(key, list)
+    }
+    for (const product of catalog) {
+      addToIndex(product.sku, product)
+      for (const variant of Array.isArray(product.variants) ? product.variants as any[] : []) variantCodes(variant).forEach((code) => addToIndex(code, product))
+    }
+    // En borradores también se reconoce el mismo modelo por nombre (los productos viejos pueden tener otro código).
+    const brandWords = new Set(['victory', 'head', 'reebok', 'fila', 'umbro', 'asics', 'puma', 'penalty', 'gilbert', 'molten', 'faf', 'everlast', 'spalding', 'bullpadel', 'fds', 'adidas', 'nike',
+      ...catalog.flatMap((product) => cleanText(product.brand).toLowerCase().split(/\s+/)).filter((word) => word.length > 2 && word !== 'sin' && word !== 'marca')])
+    const byModel = new Map<string, typeof catalog>()
+    if (draft) {
+      for (const product of catalog) {
+        if (product.deletedAt) continue
+        const key = sameModelKey(product.name, brandWords)
+        if (key) byModel.set(key, [...(byModel.get(key) ?? []), product])
+      }
+    }
+    const pendingCreates: Array<{ data: Prisma.ProductCreateInput; variantSkus: string[]; rowNumber: number; sku: string }> = []
+
     for (const group of groups.values()) {
       const first = group[0]
       const variantSkus = Array.from(new Set(group.map((item) => item.sku)))
       try {
         // Match a grouped product even when the Excel lists another variant first.
-        const matches = await this.prisma.product.findMany({ where: { OR: [
-          { sku: { in: variantSkus } },
-          ...variantSkus.map(sku => ({ variants: { array_contains: [{ sku }] } })),
-        ] } })
+        const groupCodes = Array.from(new Set(group.flatMap((item) => rowCodes(item.row))))
+        let matches = Array.from(new Set(groupCodes.flatMap((code) => bySku.get(code) ?? [])))
+        if (!matches.length && draft) {
+          const sameModel = byModel.get(sameModelKey(baseProductName(first.row) || first.name, brandWords)) ?? []
+          if (sameModel.length === 1) matches = sameModel
+        }
         const matchedVariants = (product: typeof matches[number]) => Array.isArray(product.variants)
-          ? (product.variants as any[]).filter(variant => variantSkus.includes(variant.sku)).length : 0
+          ? (product.variants as any[]).filter(variant => variantCodes(variant).some((code) => groupCodes.includes(code))).length : 0
         const existing = matches.sort((a, b) =>
           Number(b.active && !b.deletedAt) - Number(a.active && !a.deletedAt)
           || matchedVariants(b) - matchedVariants(a)
@@ -258,28 +328,70 @@ export class ProductsService {
         const savedVariants = Array.isArray(existing?.variants) ? existing.variants as any[] : []
         versions[first.sku] = existing?.updatedAt.toISOString() ?? null
         if (options.expectedVersions && (!Object.prototype.hasOwnProperty.call(options.expectedVersions, first.sku) || options.expectedVersions[first.sku] !== versions[first.sku])) throw new ConflictException('Cambió el catálogo desde la revisión. Revisá los cambios otra vez antes de confirmar.')
+        if (draft && existing) {
+          // Producto que ya estaba: no se tocan nombre, precios, stock ni fotos. Solo se guardan los códigos
+          // del Excel en sus variantes y se agregan los talles/colores que la tienda no tenía (sin stock).
+          const merged = savedVariants.map((variant) => ({ ...variant, codes: Array.isArray(variant.codes) ? [...variant.codes] : [] }))
+          const added: string[] = []
+          let linked = 0
+          for (const item of group) {
+            const codes = rowCodes(item.row)
+            const color = extractVariantValue(item.row, 'color')
+            const size = extractVariantValue(item.row, 'size')
+            const target = findVariantForRow(merged, item.row, color, size) ?? merged.find((variant) => sameCombo(variant, color, size))
+            if (target) {
+              const missing = codes.filter((code) => !variantCodes(target).includes(code))
+              if (missing.length) { target.codes.push(...missing); linked += 1 }
+            } else if (merged.length) {
+              merged.push({ sku: item.sku, codes: codes.filter((code) => code !== item.sku), color, size, gender: extractVariantValue(item.row, 'gender'), image: '', stock: 0, priceRetail: existing.priceRetail, priceWholesale: existing.priceWholesale })
+              added.push([color, size].filter(Boolean).join(' ') || item.sku)
+            }
+          }
+          if (!added.length && !linked) { plans.push({ sku: first.sku, name: existing.name, kind: 'unchanged', changes: [] }); unchangedCount++; continue }
+          const changes = [
+            ...(added.length ? [{ field: 'Talles/colores nuevos (sin stock)', before: null, after: added.join(', ') }] : []),
+            ...(linked ? [{ field: 'Códigos del Excel vinculados', before: null, after: linked }] : []),
+          ]
+          plans.push({ sku: existing.sku, name: existing.name, kind: 'update', changes })
+          const mergedColors = Array.from(new Set(merged.flatMap((variant) => String(variant.color ?? '').split('/').map((color: string) => color.trim()).filter(Boolean))))
+          const mergedSizes = Array.from(new Set(merged.map((variant) => variant.size).filter(Boolean)))
+          if (!options.dryRun) {
+            const updated = await this.prisma.product.updateMany({ where: { id: existing.id, updatedAt: existing.updatedAt }, data: { variants: merged as Prisma.InputJsonValue, colors: mergedColors, sizes: mergedSizes } })
+            if (!updated.count) throw new ConflictException('El producto cambió durante la importación. Volvé a importar.')
+            const fresh = await this.prisma.product.findUnique({ where: { id: existing.id } })
+            if (fresh) Object.assign(existing, fresh)
+          } else {
+            Object.assign(existing, { variants: merged, colors: mergedColors, sizes: mergedSizes })
+          }
+          // Otro grupo del mismo Excel puede caer en este producto: que lo encuentre ya actualizado.
+          merged.forEach((variant) => variantCodes(variant).forEach((code) => addToIndex(code, existing)))
+          updatedCount++
+          continue
+        }
         const categories = Array.from(new Set([first.category, ...(Array.isArray(first.row?.categories) && first.row.categories.length
           ? first.row.categories : existing?.category === first.category ? existing.categories : [])].map(text).filter(Boolean)))
         const incomingVariants = group.map((item) => {
-          const saved = savedVariants.find(variant => variant.sku === item.sku)
+          const codes = rowCodes(item.row)
+          const saved = findVariantForRow(savedVariants, item.row, extractVariantValue(item.row, 'color'), extractVariantValue(item.row, 'size'))
           const stockValue = number(item.row?.stock ?? item.row?.quantity_to_sell_on_facebook)
           if (stockValue !== null && (!Number.isSafeInteger(stockValue) || stockValue < 0)) throw new BadRequestException(`Stock inválido para ${item.sku}. Usá cantidades enteras desde cero.`)
           return ({
-          sku: item.sku,
+          // Si la variante ya existía con otro código (por ejemplo el de barras), conserva su SKU y suma el nuevo.
+          sku: saved?.sku ?? item.sku,
+          codes: Array.from(new Set([...(Array.isArray(saved?.codes) ? saved.codes : []), ...codes].filter((code) => code !== (saved?.sku ?? item.sku)))),
           color: extractVariantValue(item.row, 'color') || saved?.color || '',
           size: extractVariantValue(item.row, 'size') || saved?.size || '',
           gender: extractVariantValue(item.row, 'gender') || saved?.gender || '',
           image: existing
-            ? text(savedVariants.some(variant => variant.sku === item.sku)
-              ? savedVariants.find(variant => variant.sku === item.sku)?.image
-              : existing.images[0])
+            ? text(saved ? saved.image : existing.images[0])
             : text(item.row?.image_link || item.row?.image),
           stock: stockValue ?? saved?.stock ?? (existing && group.length === 1 && !savedVariants.length ? existing.stock : 0),
-          priceRetail: item.priceRetail,
-          priceWholesale: item.priceWholesale,
+          priceRetail: item.priceRetail ?? saved?.priceRetail ?? existing?.priceRetail ?? 0,
+          priceWholesale: item.priceWholesale ?? saved?.priceWholesale ?? existing?.priceWholesale ?? 0,
           })
         })
-        const variants = [...savedVariants.filter(variant => !variantSkus.includes(variant.sku)), ...incomingVariants]
+        const matchedSkus = new Set(incomingVariants.map((variant) => variant.sku))
+        const variants = [...savedVariants.filter(variant => !matchedSkus.has(variant.sku)), ...incomingVariants]
         const colors = Array.from(new Set(variants.flatMap((variant) => String(variant.color ?? '').split('/').map((color: string) => color.trim()).filter(Boolean))))
         const sizes = Array.from(new Set(variants.map((variant) => variant.size).filter(Boolean)))
         const images = Array.from(new Set(variants.map((variant) => variant.image).filter(Boolean)))
@@ -302,14 +414,18 @@ export class ProductsService {
           sizes,
           variants: variants as Prisma.InputJsonValue,
           tags: [text(first.row?.['product_tags[0]']) || existing?.tags?.[0] || '', text(first.row?.['product_tags[1]']) || existing?.tags?.[1] || '', ...(existing?.tags?.slice(2) ?? [])].filter(Boolean),
-          active: existing?.active ?? true,
+          // Un borrador nace oculto: se publica cuando le cargan precio, stock y foto.
+          active: existing?.active ?? !draft,
         }
         if (!Number.isFinite(data.tax) || data.tax < 0 || data.tax > 100) throw new BadRequestException('IVA inválido')
         const changes = catalogChanges(existing, data)
-        const kind = !existing ? 'create' : changes.length ? 'update' : 'unchanged'
+        // En borrador los productos que ya están en la tienda no se tocan.
+        const kind = !existing ? 'create' : changes.length && !draft ? 'update' : 'unchanged'
         plans.push({ sku: first.sku, name: data.name, kind, changes })
         if (kind === 'unchanged') { unchangedCount++; continue }
         if (options.dryRun) { if (existing) updatedCount++; else createdCount++; continue }
+        // Los nuevos se guardan juntos al final (mucho más rápido con miles de productos).
+        if (!existing) { pendingCreates.push({ data, variantSkus, rowNumber: first.rowNumber, sku: first.sku }); continue }
 
         const product = await this.prisma.$transaction(async tx => {
           if (!existing) return tx.product.create({ data })
@@ -336,6 +452,29 @@ export class ProductsService {
       }
     }
 
+    for (let start = 0; start < pendingCreates.length; start += 200) {
+      const chunk = pendingCreates.slice(start, start + 200)
+      try {
+        const result = await this.prisma.product.createMany({ data: chunk.map((item) => item.data as Prisma.ProductCreateManyInput) })
+        createdCount += result.count
+      } catch {
+        // Si falla la tanda, se guardan de a uno para saber exactamente cuál tiene el problema.
+        for (const item of chunk) {
+          try {
+            await this.prisma.product.create({ data: item.data })
+            createdCount += 1
+          } catch (error) {
+            errors.push({ rowNumber: item.rowNumber, sku: item.sku || null, message: error instanceof Error && /Unique/i.test(error.message) ? 'Ese código ya existe en otro producto' : 'No se pudo guardar el producto' })
+          }
+        }
+      }
+    }
+    const createdSkus = pendingCreates.map((item) => String(item.data.sku))
+    const replacedSkus = pendingCreates.flatMap((item) => item.variantSkus.filter((sku) => sku !== item.data.sku))
+    if (replacedSkus.length) {
+      await this.prisma.product.updateMany({ where: { sku: { in: replacedSkus, notIn: createdSkus }, deletedAt: null }, data: { active: false, deletedAt: new Date() } })
+    }
+
     return { totalRows: rows.length, createdCount, updatedCount, unchangedCount, skippedCount: errors.length, errorCount: errors.length, errors, plans, versions, dryRun: options.dryRun === true }
   }
 
@@ -343,15 +482,16 @@ export class ProductsService {
     const errors: Array<{ rowNumber: number; sku: string | null; message: string }> = []
     const plans: ImportPlan[] = []
     const versions: Record<string, string | null> = {}
-    const skus = rows.map(row => cleanText(row?.id || row?.sku))
-    const products = await this.prisma.product.findMany({ where: { deletedAt: null, OR: [
-      { sku: { in: skus } }, ...skus.map(sku => ({ variants: { array_contains: [{ sku }] } })),
-    ] } })
+    const products = await this.prisma.product.findMany({ where: { deletedAt: null } })
+    const byCode = new Map<string, typeof products[number]>()
+    for (const product of products) {
+      for (const variant of Array.isArray(product.variants) ? product.variants as any[] : []) variantCodes(variant).forEach((code) => { if (!byCode.has(code)) byCode.set(code, product) })
+    }
+    for (const product of products) if (!byCode.has(product.sku)) byCode.set(product.sku, product)
     const groups = new Map<string, { product: typeof products[number]; rows: any[] }>()
     for (const row of rows) {
       const sku = cleanText(row?.id || row?.sku)
-      const product = products.find(product => Array.isArray(product.variants) && (product.variants as any[]).some(v => v.sku === sku))
-        ?? products.find(product => product.sku === sku)
+      const product = rowCodes(row).map((code) => byCode.get(code)).find(Boolean)
       if (!sku || !product) { errors.push({ rowNumber: row.rowNumber, sku: sku || null, message: 'El SKU no existe. Usá Importación completa para crear productos nuevos.' }); continue }
       const group = groups.get(product.id) ?? { product, rows: [] }
       group.rows.push(row); groups.set(product.id, group)
@@ -366,7 +506,7 @@ export class ProductsService {
           const sku = cleanText(row.id || row.sku)
           versions[sku] = product.updatedAt.toISOString()
           if (options.expectedVersions && options.expectedVersions[sku] !== versions[sku]) throw new ConflictException('Cambió el catálogo desde la revisión. Revisá otra vez antes de confirmar.')
-          const variant = variants.find(v => v.sku === sku)
+          const variant = findVariantForRow(variants, row)
           if (variants.length && !variant) throw new BadRequestException('Para este producto indicá el SKU de cada variante.')
           const values = options.mode === 'stock'
             ? { stock: catalogNumber(row.stock ?? row.quantity_to_sell_on_facebook) }

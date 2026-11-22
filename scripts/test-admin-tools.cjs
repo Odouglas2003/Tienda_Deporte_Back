@@ -7,7 +7,7 @@ const { assertCoupon, CouponsService } = require('../dist-nest/coupons/coupons.s
 const date = new Date('2026-10-07T12:00:00Z')
 const product = { id: 'p1', name: 'Remera', sku: 'R1', priceRetail: 100, priceWholesale: 80, tax: 21, discount: 0, stock: 10, variants: [], images: [], active: true, deletedAt: null, updatedAt: date }
 const coupon = { id: 'c1', code: 'NEZHA10', percent: 10, minSubtotal: 50, maxUses: 1, usedCount: 0, active: true, expiresAt: new Date(Date.now() + 86400000), updatedAt: date }
-const payload = { customer: { firstName: 'Prueba', lastName: 'Local', email: 'test@example.com' }, items: [{ product: 'p1', quantity: 2 }], paymentMethod: 'transfer', shipping: { address: 'Prueba', city: 'Prueba', postalCode: '1000', phone: '000000' }, couponCode: 'nezha10', expectedTotal: 217.8 }
+const payload = { customer: { firstName: 'Prueba', lastName: 'Local', email: 'test@example.com' }, items: [{ product: 'p1', quantity: 2 }], paymentMethod: 'transfer', shipping: { address: 'Prueba', city: 'Prueba', postalCode: '1000', phone: '000000' }, couponCode: 'nezha10', expectedTotal: 180 }
 
 function fixture(options = {}) {
   const state = { product: structuredClone({ ...product, ...options.product }), coupon: structuredClone({ ...coupon, ...options.coupon }), orders: [] }
@@ -47,9 +47,9 @@ function fixture(options = {}) {
 test('coupon discounts the base and then calculates VAT; stored totals reconcile', async () => {
   const f = fixture()
   const result = await f.orders.create(null, payload)
-  assert.equal(result.order.discountAmount, 20)
-  assert.equal(result.order.taxAmount, 37.8)
-  assert.equal(result.order.total, 217.8)
+  assert.equal(result.order.discountAmount, 16.53) // el minorista 100 ya trae IVA: neto 165,29 x 10%
+  assert.equal(result.order.taxAmount, 31.24)
+  assert.equal(result.order.total, 180)
   assert.equal(result.order.couponCode, 'NEZHA10')
   assert.equal(f.state.product.stock, 8)
   assert.equal(f.state.coupon.usedCount, 1)
@@ -126,9 +126,9 @@ test('checkout and backend agree on cents for a coupon and a small line', async 
   const pricing = loadTs('utils/productPricing.ts')
   const { calculateCartTax } = loadTs('utils/tax.ts', { '@/utils/productPricing': pricing })
   const f = fixture({ product: { priceRetail: 0.03 }, coupon: { percent: 33.33, minSubtotal: 0 } })
-  const result = await f.orders.create(null, { ...payload, items: [{ product: 'p1', quantity: 1 }], expectedTotal: 0.02 })
+  const result = await f.orders.create(null, { ...payload, items: [{ product: 'p1', quantity: 1 }], expectedTotal: 0.01 })
   const frontendTax = calculateCartTax([{ product: f.state.product, quantity: 1 }], false, 21, 33.33)
   assert.equal(frontendTax, result.order.taxAmount)
   assert.equal(result.order.discountAmount, 0.01)
-  assert.equal(result.order.total, 0.02)
+  assert.equal(result.order.total, 0.01)
 })

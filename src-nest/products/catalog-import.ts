@@ -1,5 +1,6 @@
 export type ImportMode = 'full' | 'prices' | 'stock'
-export interface ImportOptions { mode?: ImportMode; dryRun?: boolean; expectedVersions?: Record<string, string | null> }
+/** draft: carga productos nuevos sin precio, ocultos, para completarlos después; no toca los que ya existen. */
+export interface ImportOptions { mode?: ImportMode; dryRun?: boolean; draft?: boolean; expectedVersions?: Record<string, string | null> }
 export interface ImportChange { field: string; before: string | number | null; after: string | number | null }
 export interface ImportPlan { sku: string; name: string; kind: 'create' | 'update' | 'unchanged'; changes: ImportChange[] }
 
