@@ -138,8 +138,9 @@ export class OrdersService {
       if (variant && Number(variant.stock) < quantity) throw new BadRequestException(`Stock insuficiente para ${product.name} (${selectedColor || selectedSize})`)
       if (variant) variants[variantIndex] = { ...variant, stock: Number(variant.stock) - quantity }
 
-      const retailPrice = variant?.priceRetail ?? product.priceRetail
-      const wholesalePrice = variant?.priceWholesale ?? product.priceWholesale
+      // Un talle sin precio propio (o en 0) usa el precio general del producto.
+      const retailPrice = (Number(variant?.priceRetail) > 0 ? Number(variant?.priceRetail) : product.priceRetail)
+      const wholesalePrice = (Number(variant?.priceWholesale) > 0 ? Number(variant?.priceWholesale) : product.priceWholesale)
       const discount = Number(product.discount)
       const retailDiscount = Number.isFinite(discount) ? Math.min(100, Math.max(0, discount)) : 0
       // El minorista se carga con IVA incluido: guardamos la parte sin IVA para que neto + IVA dé el precio publicado.
@@ -327,8 +328,8 @@ export class OrdersService {
     const rate = productVatRate(Number(product.tax), generalTaxRate)
     const discount = Math.min(100, Math.max(0, Number(product.discount) || 0))
     const listPrice = isWholesaleBuyer
-      ? Number(variant?.priceWholesale ?? product.priceWholesale)
-      : Math.round(Number(variant?.priceRetail ?? product.priceRetail) * (1 - discount / 100) * 100) / 100
+      ? (Number(variant?.priceWholesale) > 0 ? Number(variant?.priceWholesale) : product.priceWholesale)
+      : Math.round((Number(variant?.priceRetail) > 0 ? Number(variant?.priceRetail) : product.priceRetail) * (1 - discount / 100) * 100) / 100
     const subtotal = netLineAmount(listPrice, quantity, rate, isWholesaleBuyer)
     const taxAmount = lineTaxAmount(listPrice, quantity, rate, isWholesaleBuyer)
     const total = Math.round((subtotal + taxAmount) * 100) / 100

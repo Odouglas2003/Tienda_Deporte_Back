@@ -98,6 +98,42 @@ function sameCombo(variant: any, color: string, size: string) {
   return norm(variant?.color) === norm(color) && norm(variant?.size) === norm(size) && Boolean(norm(color) || norm(size))
 }
 
+/**
+ * Talles y colores que llegan del formulario del panel: solo campos conocidos, stock entero,
+ * códigos sin repetir y precios propios opcionales (vacío = usa el precio general del producto).
+ */
+function sanitizeVariants(raw: unknown) {
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) throw new BadRequestException('Los talles y colores no son válidos.')
+  if (raw.length > 300) throw new BadRequestException('Un producto admite hasta 300 talles/colores.')
+  const text = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '')
+  const seen = new Set<string>()
+  return raw.map((item: any, index) => {
+    const sku = text(item?.sku, 80)
+    if (!sku) throw new BadRequestException(`Falta el código del talle/color ${index + 1}.`)
+    if (seen.has(sku)) throw new BadRequestException(`El código ${sku} está repetido en los talles/colores.`)
+    seen.add(sku)
+    const stock = Number(item?.stock ?? 0)
+    if (!Number.isSafeInteger(stock) || stock < 0) throw new BadRequestException(`El stock de ${sku} tiene que ser un número entero desde 0.`)
+    const price = (value: unknown) => (value === undefined || value === null || value === '' ? undefined : Number(value))
+    const priceRetail = price(item?.priceRetail)
+    const priceWholesale = price(item?.priceWholesale)
+    for (const value of [priceRetail, priceWholesale]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new BadRequestException(`El precio de ${sku} no es válido.`)
+    const codes = Array.isArray(item?.codes) ? Array.from(new Set(item.codes.map((code: unknown) => text(code, 80)).filter((code: string) => code && code !== sku))) : []
+    return {
+      sku,
+      ...(codes.length ? { codes } : {}),
+      color: text(item?.color, 60),
+      size: text(item?.size, 30),
+      gender: text(item?.gender, 30),
+      image: text(item?.image, 2_000_000),
+      stock,
+      ...(priceRetail !== undefined ? { priceRetail } : {}),
+      ...(priceWholesale !== undefined ? { priceWholesale } : {}),
+    }
+  })
+}
+
 function variantGroupKey(row: any) {
   const category = cleanText(row?.category || row?.google_product_category || row?.fb_product_category).toLowerCase()
   const brand = cleanText(row?.brand).toLowerCase()
@@ -139,6 +175,7 @@ export class ProductsService {
     if (text(payload?.sizeGuide).length > 5000) throw new BadRequestException('La guía de talles admite hasta 5000 caracteres.')
     if (await this.prisma.product.findUnique({ where: { sku } })) throw new ConflictException(`Ya existe un producto con el SKU ${sku}.`)
     const categories = Array.from(new Set([category, ...list(payload?.categories)]))
+    const variants = sanitizeVariants(payload?.variants) ?? []
     return this.prisma.product.create({
       data: {
         name, sku, brand, category, categories,
@@ -147,7 +184,8 @@ export class ProductsService {
         sizeGuide: text(payload?.sizeGuide),
         priceRetail: amount(payload?.priceRetail, 'El precio minorista'),
         priceWholesale: amount(payload?.priceWholesale, 'El precio mayorista'),
-        stock: amount(payload?.stock, 'El stock', true),
+        stock: variants.length ? variants.reduce((sum, variant) => sum + variant.stock, 0) : amount(payload?.stock, 'El stock', true),
+        variants: variants as Prisma.InputJsonValue,
         tax: payload?.tax === undefined ? 0 : amount(payload.tax, 'El IVA'),
         images: list(payload?.images),
         tags: list(payload?.tags),
@@ -163,6 +201,11 @@ export class ProductsService {
     if (payload.sizeGuide !== undefined && (typeof payload.sizeGuide !== 'string' || payload.sizeGuide.length > 5000)) throw new BadRequestException('La guía de talles admite hasta 5000 caracteres.')
     const product = await this.get(id)
     const { expectedUpdatedAt, ...data } = payload
+    const variants = sanitizeVariants(data.variants)
+    if (variants) {
+      data.variants = variants
+      if (variants.length) data.stock = variants.reduce((sum, variant) => sum + variant.stock, 0)
+    }
     // Un producto sin precio no se publica (en la tienda saldría a $0).
     const willBeActive = data.active ?? product.active
     const retail = data.priceRetail ?? product.priceRetail
