@@ -147,6 +147,7 @@ export class OrdersService {
       const listPrice = isWholesaleBuyer
         ? wholesalePrice
         : Math.round(retailPrice * (1 - retailDiscount / 100) * 100) / 100
+      if (!(listPrice > 0)) throw new BadRequestException(`${product.name} todavía no tiene precio. Consultanos por WhatsApp.`)
       const subtotal = netLineAmount(listPrice, quantity, productVatRate(Number(product.tax), generalTaxRate), isWholesaleBuyer)
       listPrices.push(listPrice)
       const unitPrice = Math.round((subtotal / quantity) * 100) / 100
@@ -345,6 +346,7 @@ export class OrdersService {
     const listPrice = isWholesaleBuyer
       ? (Number(variant?.priceWholesale) > 0 ? Number(variant?.priceWholesale) : product.priceWholesale)
       : Math.round((Number(variant?.priceRetail) > 0 ? Number(variant?.priceRetail) : product.priceRetail) * (1 - discount / 100) * 100) / 100
+    if (!(listPrice > 0)) throw new BadRequestException('Este producto todavía no tiene precio: cargáselo en Productos antes de reservarlo.')
     const subtotal = netLineAmount(listPrice, quantity, rate, isWholesaleBuyer)
     const taxAmount = lineTaxAmount(listPrice, quantity, rate, isWholesaleBuyer)
     const total = Math.round((subtotal + taxAmount) * 100) / 100

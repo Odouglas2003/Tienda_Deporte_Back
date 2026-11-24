@@ -209,7 +209,9 @@ export class ProductsService {
     // Un producto sin precio no se publica (en la tienda saldría a $0).
     const willBeActive = data.active ?? product.active
     const retail = data.priceRetail ?? product.priceRetail
-    if (willBeActive && !(Number(retail) > 0)) throw new BadRequestException('Para publicar el producto cargale primero el precio minorista.')
+    const stockAfter = data.stock ?? product.stock
+    // Sin precio se puede mostrar (sale "$0" y "Sin stock"), pero no con stock: se vendería a $0.
+    if (willBeActive && !(Number(retail) > 0) && Number(stockAfter) > 0) throw new BadRequestException('Un producto sin precio no puede tener stock publicado: cargale el precio minorista o dejá el stock en 0.')
     if (expectedUpdatedAt !== undefined && new Date(expectedUpdatedAt).getTime() !== product.updatedAt.getTime()) throw new ConflictException('El producto cambió mientras editabas. Cerrá y recargá la lista antes de guardar.')
     const changed = await this.prisma.product.updateMany({ where: { id, deletedAt: null, updatedAt: product.updatedAt }, data })
     if (!changed.count) throw new ConflictException('El stock o precio cambió. Recargá el producto antes de guardar.')
@@ -461,8 +463,9 @@ export class ProductsService {
           sizes,
           variants: variants as Prisma.InputJsonValue,
           tags: [text(first.row?.['product_tags[0]']) || existing?.tags?.[0] || '', text(first.row?.['product_tags[1]']) || existing?.tags?.[1] || '', ...(existing?.tags?.slice(2) ?? [])].filter(Boolean),
-          // Un borrador nace oculto: se publica cuando le cargan precio, stock y foto.
-          active: existing?.active ?? !draft,
+          // Los nuevos se muestran aunque no tengan precio, foto ni stock (salen "$0" y "Sin stock").
+          // Solo nacen ocultos si traen stock sin precio, para que nadie compre a $0.
+          active: existing?.active ?? (!draft || Math.min(...variants.map((variant) => Number(variant.priceRetail) || 0)) > 0 || variants.reduce((total, variant) => total + variant.stock, 0) === 0),
         }
         if (!Number.isFinite(data.tax) || data.tax < 0 || data.tax > 100) throw new BadRequestException('IVA inválido')
         const changes = catalogChanges(existing, data)

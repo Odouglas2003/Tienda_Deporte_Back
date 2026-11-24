@@ -34,5 +34,8 @@ const { OrdersService } = require('../src-nest/orders/orders.service')
   const service = new OrdersService(prisma, null, { getGeneralRate: async () => ({ rate: 21 }) })
   const { order } = await service.create(null, { customer: { firstName: 'Ana', lastName: 'Gómez', email: 'ana@example.com' }, items: [{ product: 'p1', quantity: 1, variantSku: 'REM-CLUB-M', selectedSize: 'M' }], paymentMethod: 'cash', shipping: { method: 'pickup', phone: '3511234567' } })
   assert.equal(order.total, 12100, 'nunca se vende a $0')
+  // Un producto sin precio (se muestra en la tienda con "$0") no se puede comprar aunque tenga stock.
+  product.priceRetail = 0
+  await assert.rejects(() => service.create(null, { customer: { firstName: 'Ana', lastName: 'Gómez', email: 'ana@example.com' }, items: [{ product: 'p1', quantity: 1, variantSku: 'REM-CLUB-M', selectedSize: 'M' }], paymentMethod: 'cash', shipping: { method: 'pickup', phone: '3511234567' } }), /no tiene precio/)
   console.log('talles y colores ok')
 })().catch((error) => { console.error(error); process.exitCode = 1 })
