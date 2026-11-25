@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma.service'
 import { catalogNumber, catalogChanges, ImportOptions, ImportPlan } from './catalog-import'
+import { classifyProduct, foldText, isNotAProduct, PRODUCT_TYPES } from './product-types'
 
 const COLOR_PATTERN_SOURCE = '\\b(azul\\s+marino|multicolor|multi|negro|negra|neg|blanco|blanca|bco|azul|verde|ver|rojo|roja|roj|gris|amarillo|amarilla|amar|naranja|nar|rosa|violeta|morado|morada|celeste|lila|beige|fucsia|bordo|dorado|dorada|dor|plateado|plateada|turquesa)\\b'
 const SIZE_PATTERN = /\b(XXXL|XXL|XL|XS|XXS|S|M|L)\b/i
@@ -228,6 +229,67 @@ export class ProductsService {
     return { updatedCount: result.count, percent: rounded }
   }
 
+  /**
+   * "Ordenar categorías" del panel: clasifica por el nombre en los 8 tipos de producto.
+   * alcance "sin-categoria": solo los que no tienen una categoría válida; "todos": revisa todo el catálogo.
+   * Sin aplicar, devuelve la vista previa.
+   */
+  async autoCategorize(body: any, actorId?: string) {
+    const scope = body?.scope === 'todos' ? 'todos' : 'sin-categoria'
+    const apply = body?.apply === true
+    const hideNotProducts = body?.hideNotProducts === true
+    const [products, abm] = await Promise.all([
+      this.prisma.product.findMany({ where: { deletedAt: null }, select: { id: true, name: true, category: true, categories: true, active: true } }),
+      this.prisma.category.findMany({ where: { deletedAt: null, active: true }, select: { name: true } }),
+    ])
+    const valid = new Set(abm.map((category) => foldText(category.name)))
+    const targets = scope === 'todos' ? products : products.filter((product) => !valid.has(foldText(product.category)))
+    const counts: Record<string, number> = Object.fromEntries(PRODUCT_TYPES.map((type) => [type, 0]))
+    const examples: Record<string, string[]> = Object.fromEntries(PRODUCT_TYPES.map((type) => [type, []]))
+    const moves = new Map<string, string[]>()
+    const notProducts: Array<{ id: string; name: string; active: boolean }> = []
+    for (const product of targets) {
+      if (isNotAProduct(product.name)) { notProducts.push({ id: product.id, name: product.name, active: product.active }); continue }
+      const { category } = classifyProduct(product.name, [product.category, ...product.categories])
+      if (foldText(category) === foldText(product.category) && product.categories.length <= 1) continue
+      counts[category] += 1
+      if (examples[category].length < 6) examples[category].push(product.name)
+      moves.set(category, [...(moves.get(category) ?? []), product.id])
+    }
+    const changes = [...moves.values()].reduce((total, ids) => total + ids.length, 0)
+    const preview = { scope, reviewed: targets.length, changes, counts, examples, notProducts }
+    if (!apply) return preview
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const name of moves.keys()) {
+        await tx.category.upsert({
+          where: { normalizedName: foldText(name) },
+          update: { active: true, deletedAt: null },
+          create: { name, normalizedName: foldText(name), slug: foldText(name).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') },
+        })
+      }
+      for (const [category, ids] of moves) {
+        for (let index = 0; index < ids.length; index += 500) {
+          await tx.product.updateMany({ where: { id: { in: ids.slice(index, index + 500) }, deletedAt: null }, data: { category, categories: [category] } })
+        }
+      }
+      if (hideNotProducts && notProducts.length) await tx.product.updateMany({ where: { id: { in: notProducts.map((item) => item.id) } }, data: { active: false } })
+      await tx.activityLog.create({ data: { userId: actorId ?? null, action: `Ordenar categorías automáticamente (${changes} productos)`, entity: 'product', metadata: { scope, counts, hidden: hideNotProducts ? notProducts.length : 0 } } })
+    }, { maxWait: 10000, timeout: 60000 })
+    return { ...preview, applied: true, hidden: hideNotProducts ? notProducts.length : 0 }
+  }
+
+  /** Mover varios productos a una categoría (del ABM). */
+  async setCategory(body: any, actorId?: string) {
+    const ids: string[] = Array.isArray(body?.ids) ? Array.from(new Set<string>(body.ids.map(String))) : []
+    if (!ids.length || ids.length > 2000) throw new BadRequestException('Elegí entre 1 y 2000 productos.')
+    const category = await this.prisma.category.findFirst({ where: { deletedAt: null, active: true, normalizedName: foldText(typeof body?.category === 'string' ? body.category : '') } })
+    if (!category) throw new BadRequestException('Esa categoría no existe. Creala primero en Configuración → Categorías.')
+    const result = await this.prisma.product.updateMany({ where: { id: { in: ids }, deletedAt: null }, data: { category: category.name, categories: [category.name] } })
+    await this.prisma.activityLog.create({ data: { userId: actorId ?? null, action: `Mover ${result.count} productos a ${category.name}`, entity: 'product', metadata: { category: category.name, productIds: ids } } })
+    return { updatedCount: result.count, category: category.name }
+  }
+
   async bulk(rows: any) {
     if (!Array.isArray(rows) || !rows.length || rows.length > 100 || new Set(rows.map(row => row?.id)).size !== rows.length) throw new BadRequestException('Seleccioná entre 1 y 100 productos diferentes.')
     return this.prisma.$transaction(async tx => {
@@ -300,7 +362,9 @@ export class ProductsService {
       const rowNumber = Number(row?.rowNumber) || index + 2
       const sku = text(row?.id || row?.sku)
       const name = text(row?.title || row?.name)
-      const category = text(row?.category || row?.google_product_category || row?.fb_product_category).toLowerCase() || (draft ? 'sin-categoria' : '')
+      const rawCategory = text(row?.category || row?.google_product_category || row?.fb_product_category).toLowerCase()
+      // Sin categoría en el Excel: se elige uno de los 8 tipos de producto según el nombre.
+      const category = rawCategory && rawCategory !== 'sin-categoria' ? rawCategory : (name ? classifyProduct(name).category : '')
       const priceRetail = number(row?.price_retail ?? row?.price)
       const priceWholesale = number(row?.price_wholesale ?? row?.wholesale_price)
       // En borrador el precio puede faltar (se completa después), pero si viene tiene que ser válido.
@@ -465,7 +529,7 @@ export class ProductsService {
           tags: [text(first.row?.['product_tags[0]']) || existing?.tags?.[0] || '', text(first.row?.['product_tags[1]']) || existing?.tags?.[1] || '', ...(existing?.tags?.slice(2) ?? [])].filter(Boolean),
           // Los nuevos se muestran aunque no tengan precio, foto ni stock (salen "$0" y "Sin stock").
           // Solo nacen ocultos si traen stock sin precio, para que nadie compre a $0.
-          active: existing?.active ?? (!draft || Math.min(...variants.map((variant) => Number(variant.priceRetail) || 0)) > 0 || variants.reduce((total, variant) => total + variant.stock, 0) === 0),
+          active: existing?.active ?? (!isNotAProduct(first.name) && (!draft || Math.min(...variants.map((variant) => Number(variant.priceRetail) || 0)) > 0 || variants.reduce((total, variant) => total + variant.stock, 0) === 0)),
         }
         if (!Number.isFinite(data.tax) || data.tax < 0 || data.tax > 100) throw new BadRequestException('IVA inválido')
         const changes = catalogChanges(existing, data)

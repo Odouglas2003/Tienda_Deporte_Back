@@ -74,6 +74,12 @@ export class ProductsController {
   @Post('bulk') bulk(@Body() body: any) { return this.products.bulk(body?.rows) }
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.admin, UserRole.superAdmin)
+  @Post('auto-categorize') autoCategorize(@Req() req: any, @Body() body: any) { return this.products.autoCategorize(body, req.auth?.sub) }
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.admin, UserRole.superAdmin)
+  @Post('set-category') setCategory(@Req() req: any, @Body() body: any) { return this.products.setCategory(body, req.auth?.sub) }
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.admin, UserRole.superAdmin)
   @Post('discount-all') discountAll(@Req() req: any, @Body() body: any) { return this.products.discountAll(body?.percent, req.auth?.sub) }
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(UserRole.admin, UserRole.superAdmin)
