@@ -76,9 +76,9 @@ export class OrdersService {
     const user = auth ? await this.prisma.user.findUnique({ where: { id: auth.sub } }) : null
     if (auth && (!user || !user.active || user.deletedAt)) throw new ForbiddenException('La cuenta no está habilitada para comprar')
     const customer = payload.customer && typeof payload.customer === 'object' ? payload.customer : {}
-    const firstName = String(customer.firstName ?? '').trim()
-    const lastName = String(customer.lastName ?? '').trim()
-    const email = String(customer.email ?? '').trim().toLowerCase()
+    const firstName = String(customer.firstName ?? '').trim().slice(0, 80)
+    const lastName = String(customer.lastName ?? '').trim().slice(0, 80)
+    const email = String(customer.email ?? '').trim().toLowerCase().slice(0, 160)
     if (!auth && (!firstName || !lastName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
       throw new BadRequestException('Completá nombre, apellido y un email válido')
     }
@@ -95,9 +95,15 @@ export class OrdersService {
     const rawShipping = payload.shipping && typeof payload.shipping === 'object' ? payload.shipping : {}
     const pickup = rawShipping.method === 'pickup'
     // Retiro en el local: no se pide dirección, solo un teléfono para coordinar.
-    const shipping = pickup
-      ? { method: 'pickup', address: '', city: '', postalCode: '', phone: String(rawShipping.phone ?? '').trim(), notes: String(rawShipping.notes ?? '').trim() }
-      : { ...rawShipping, method: 'delivery' }
+    const field = (value: unknown, max: number) => String(value ?? '').trim().slice(0, max)
+    const shipping = {
+      method: pickup ? 'pickup' : 'delivery',
+      address: pickup ? '' : field(rawShipping.address, 200),
+      city: pickup ? '' : field(rawShipping.city, 100),
+      postalCode: pickup ? '' : field(rawShipping.postalCode, 20),
+      phone: field(rawShipping.phone, 40),
+      notes: field(rawShipping.notes, 1000),
+    }
     const missingShippingFields = [
       !pickup && !String(shipping.address ?? '').trim() && 'dirección',
       !pickup && !String(shipping.city ?? '').trim() && 'ciudad',

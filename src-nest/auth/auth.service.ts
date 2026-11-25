@@ -7,6 +7,9 @@ import * as bcrypt from 'bcryptjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { passwordProblem } from '../security'
 
+// Hash (costo 10) de una clave al azar que nadie conoce: se compara cuando el email no existe, para que la respuesta tarde lo mismo.
+const DUMMY_PASSWORD_HASH = '$2a$10$9uFMuv.BwE.4JfkGYBsCpeWnd2CSs6Grj/RyUcOpoTEFopPy245w.'
+
 type PublicUser = Omit<User, 'password'> & { assignedSellerName?: string }
 
 @Injectable()
@@ -28,7 +31,8 @@ export class AuthService {
 
   async login(email: string, password: string) {
     const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() }, include: { assignedSeller: { select: { name: true } } } })
-    if (!user || !(await bcrypt.compare(password, user.password))) throw new UnauthorizedException('Email o contraseña incorrectos')
+    const matches = await bcrypt.compare(password, user?.password ?? DUMMY_PASSWORD_HASH)
+    if (!user || user.deletedAt || !matches) throw new UnauthorizedException('Email o contraseña incorrectos')
     if (!user.active) throw new ForbiddenException('La cuenta está inactiva. Escribinos para reactivarla.')
     if (user.accountType === AccountType.mayorista && !user.approved) throw new ForbiddenException('Tu cuenta mayorista todavía no fue aprobada. Te avisamos cuando esté habilitada.')
     await this.prisma.activityLog.create({ data: { userId: user.id, action: 'Login', entity: 'auth' } })

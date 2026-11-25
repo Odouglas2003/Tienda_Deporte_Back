@@ -1,11 +1,11 @@
 import { Body, Controller, Get, Patch, Post, Req, UseGuards } from '@nestjs/common'
-import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator'
+import { IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator'
 import { AccountType } from '@prisma/client'
 import { AuthService } from './auth.service'
 import { AuthGuard } from './auth.guard'
 
-class LoginDto { @IsEmail() email!: string; @IsString() password!: string }
-class RegisterDto { @IsString() @MinLength(2) name!: string; @IsEmail() email!: string; @IsOptional() @IsString() password?: string; @IsString() phone!: string; @IsEnum(AccountType) accountType!: AccountType; @IsOptional() @IsString() businessName?: string; @IsOptional() @IsString() cuit?: string }
+class LoginDto { @IsEmail() @MaxLength(160) email!: string; @IsString() @MaxLength(128) password!: string }
+class RegisterDto { @IsString() @MinLength(2) @MaxLength(120) name!: string; @IsEmail() @MaxLength(160) email!: string; @IsOptional() @IsString() @MaxLength(128) password?: string; @IsString() @MaxLength(40) phone!: string; @IsEnum(AccountType) accountType!: AccountType; @IsOptional() @IsString() @MaxLength(160) businessName?: string; @IsOptional() @IsString() @MaxLength(20) cuit?: string }
 class ChangePasswordDto { @IsString() @MinLength(8) password!: string }
 class ForgotPasswordDto { @IsString() email!: string }
 class ResetPasswordDto { @IsString() token!: string; @IsString() password!: string }
