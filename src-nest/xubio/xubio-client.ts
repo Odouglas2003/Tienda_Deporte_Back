@@ -1,4 +1,4 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common'
+import { BadRequestException, Logger, ServiceUnavailableException } from '@nestjs/common'
 
 /**
  * Cliente de SOLO LECTURA para la API de Xubio. Únicamente pide el token, los productos y el stock:
@@ -20,6 +20,7 @@ type Token = { value: string; expiresAt: number }
 
 export class XubioClient {
   private token?: Token
+  private readonly logger = new Logger('XubioClient')
 
   constructor(private readonly clientId: string, private readonly secret: string) {}
 
@@ -104,13 +105,22 @@ export class XubioClient {
   }
 
   private async get(path: string, query: Record<string, string>) {
-    const token = await this.getToken()
     const url = `${BASE_URL}${path}?${new URLSearchParams(query)}`
-    const response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } })
-    if (response.status === 401 || response.status === 403) {
-      throw new BadRequestException('Xubio no deja leer el stock con estas claves. Puede que el plan no incluya la API.')
+    const what = path === '/productoStock' ? 'el stock' : 'la lista de productos'
+    let response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${await this.getToken()}`, Accept: 'application/json' } })
+    if (response.status === 401) {
+      // Puede ser un acceso vencido: pedimos uno nuevo y probamos una vez más.
+      this.token = undefined
+      response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${await this.getToken()}`, Accept: 'application/json' } })
     }
-    if (!response.ok) throw new ServiceUnavailableException(`Xubio no respondió bien (error ${response.status}). Probá de nuevo en un rato.`)
+    if (!response.ok) {
+      // Mostramos qué parte falló y lo que dice Xubio, para saber si es el plan, un permiso o un error de ellos.
+      const detail = (await response.text().catch(() => '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+      this.logger.warn(`Xubio ${path} respondió ${response.status}: ${detail}`)
+      const reason = `Xubio no dejó leer ${what} (error ${response.status}${detail ? `: ${detail}` : ''}).`
+      if (response.status === 401 || response.status === 403) throw new BadRequestException(`${reason} Puede que el plan o el usuario de Xubio no tenga permiso para esto.`)
+      throw new ServiceUnavailableException(`${reason} Probá de nuevo en un rato.`)
+    }
     return response.json()
   }
 
