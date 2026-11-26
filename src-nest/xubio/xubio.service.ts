@@ -165,49 +165,54 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     for (const code of codes) {
       const group = this.notOnWeb.get(code)
       if (!group) { skipped.push({ code, name: '', reason: 'No está en la última lectura de Xubio. Tocá "Ver qué cambiaría" de nuevo.' }); continue }
-      const name = group.name
-      if (isNotAProduct(name)) { skipped.push({ code, name, reason: 'No parece un producto (por ejemplo, un descuento).' }); continue }
-      const sku = group.sku
-      const existing = await this.prisma.product.findUnique({ where: { sku }, select: { deletedAt: true } })
-      if (existing) {
-        skipped.push({ code, name, reason: existing.deletedAt ? 'Ya existió en la página y se borró. Restauralo desde Productos.' : 'Ya está en la página.' })
-        this.notOnWeb.delete(code)
-        continue
-      }
-      // Mismo nombre que uno de la página: le faltan talles a ese producto, no hay que crear otro.
-      const sameName = await this.prisma.product.findFirst({ where: { deletedAt: null, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })
-      if (sameName) {
-        skipped.push({ code, name, reason: 'Ya hay un producto con ese nombre en la página: sumale el talle/color desde Productos.' })
-        continue
-      }
-      const { category } = classifyProduct(name)
-      await this.prisma.category.upsert({
-        where: { normalizedName: foldText(category) },
-        update: {},
-        create: { name: category, normalizedName: foldText(category), slug: foldText(category).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') },
-      })
-      // Un solo código: producto simple. Varios (talles/colores): un producto con sus variantes, como el resto de la tienda.
-      const variants = group.items.length > 1
-        ? group.items.map((item) => ({ sku: item.code, codes: item.barcode && item.barcode !== item.code ? [item.barcode] : [], color: item.color, size: item.size, gender: '', image: '', stock: item.stock, priceRetail: 0, priceWholesale: 0 }))
-        : []
-      const stock = group.items.reduce((total, item) => total + item.stock, 0)
-      const colors = [...new Set(variants.map((variant) => variant.color).filter(Boolean))]
-      const sizes = [...new Set(variants.map((variant) => variant.size).filter(Boolean))]
-      try {
-        await this.prisma.product.create({
-          data: { name, sku, category, categories: [category], priceRetail: 0, priceWholesale: 0, stock, images: [], tags: [], colors, sizes, variants: variants as Prisma.InputJsonValue, active: true },
-        })
-      } catch {
-        skipped.push({ code, name, reason: 'No se pudo crear. Probá de nuevo.' })
-        continue
-      }
-      created.push({ code, name, category })
-      this.notOnWeb.delete(code)
+      const outcome = await this.createFromGroup(group, true)
+      if (outcome.ok) created.push({ code, name: group.name, category: outcome.category })
+      else skipped.push({ code, name: group.name, reason: outcome.reason })
     }
     if (created.length) {
       await this.prisma.activityLog.create({ data: { userId: actorId ?? null, action: `Agregar ${created.length} productos desde Xubio`, entity: 'product', metadata: { codes: created.map((item) => item.code) } } }).catch(() => null)
     }
     return { created, skipped }
+  }
+
+  /**
+   * Crea en la página un producto que está en Xubio. No lo crea si ya existe (aunque esté borrado),
+   * si hay otro con el mismo nombre o si no parece un producto.
+   */
+  private async createFromGroup(group: NotOnWebGroup, active: boolean): Promise<{ ok: true; category: string } | { ok: false; reason: string }> {
+    const name = group.name
+    if (isNotAProduct(name)) return { ok: false, reason: 'No parece un producto (por ejemplo, un descuento).' }
+    const sku = group.sku
+    const existing = await this.prisma.product.findUnique({ where: { sku }, select: { deletedAt: true } })
+    if (existing) {
+      this.notOnWeb.delete(group.key)
+      return { ok: false, reason: existing.deletedAt ? 'Ya existió en la página y se borró. Restauralo desde Productos.' : 'Ya está en la página.' }
+    }
+    // Mismo nombre que uno de la página: le faltan talles a ese producto, no hay que crear otro.
+    const sameName = await this.prisma.product.findFirst({ where: { deletedAt: null, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })
+    if (sameName) return { ok: false, reason: 'Ya hay un producto con ese nombre en la página: sumale el talle/color desde Productos.' }
+    const { category } = classifyProduct(name)
+    await this.prisma.category.upsert({
+      where: { normalizedName: foldText(category) },
+      update: {},
+      create: { name: category, normalizedName: foldText(category), slug: foldText(category).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') },
+    })
+    // Un solo código: producto simple. Varios (talles/colores): un producto con sus variantes, como el resto de la tienda.
+    const variants = group.items.length > 1
+      ? group.items.map((item) => ({ sku: item.code, codes: item.barcode && item.barcode !== item.code ? [item.barcode] : [], color: item.color, size: item.size, gender: '', image: '', stock: item.stock, priceRetail: 0, priceWholesale: 0 }))
+      : []
+    const stock = group.items.reduce((total, item) => total + item.stock, 0)
+    const colors = [...new Set(variants.map((variant) => variant.color).filter(Boolean))]
+    const sizes = [...new Set(variants.map((variant) => variant.size).filter(Boolean))]
+    try {
+      await this.prisma.product.create({
+        data: { name, sku, category, categories: [category], priceRetail: 0, priceWholesale: 0, stock, images: [], tags: [], colors, sizes, variants: variants as Prisma.InputJsonValue, active },
+      })
+    } catch {
+      return { ok: false, reason: 'No se pudo crear. Probá de nuevo.' }
+    }
+    this.notOnWeb.delete(group.key)
+    return { ok: true, category }
   }
 
   getJob() {
@@ -255,7 +260,15 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
       else skippedBusy++
     }
 
-    const result = { ...plan.summary, updatedProducts, skippedBusy, mode, at: new Date().toISOString() }
+    // Lo nuevo de Xubio entra visible, igual que al agregarlo a mano: sin foto y con "Consultar precio" hasta que le carguen el precio.
+    const addedNew: string[] = []
+    for (const group of [...this.notOnWeb.values()]) {
+      const outcome = await this.createFromGroup(group, true)
+      if (outcome.ok) addedNew.push(group.name)
+    }
+    if (addedNew.length) await this.log(`Se agregaron ${addedNew.length} productos nuevos de Xubio`, { names: addedNew.slice(0, 200) })
+
+    const result = { ...plan.summary, updatedProducts, skippedBusy, addedNew: addedNew.length, mode, at: new Date().toISOString() }
     await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastSyncAt: new Date(), lastResult: result as Prisma.InputJsonValue, lastError: null } })
     if (plan.summary.changes || mode === 'manual') await this.log('Stock actualizado desde Xubio', result)
     return result
