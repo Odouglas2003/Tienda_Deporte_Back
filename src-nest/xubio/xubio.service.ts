@@ -34,6 +34,8 @@ type Plan = {
     xubioNotOnWeb: number
     blockedNoPrice: number
     unreadable: number
+    /** Unidades vendidas en la tienda que Xubio todavía no descontó (se restan del stock de Xubio). */
+    pendingWebSales: number
   }
   changes: Change[]
   xubioNotOnWebSample: string[]
@@ -46,7 +48,22 @@ type Plan = {
   }
   /** Por producto: variantes con el stock nuevo, para aplicar. */
   updates: Map<string, { updatedAt: Date; variants: any[] | null; stock: number }>
+  /** Lo que hay que recordar para la próxima vuelta (se guarda solo al actualizar). */
+  memory: XubioMemory
 }
+
+/**
+ * Lo que la página recuerda entre actualizaciones para no "devolver" lo vendido en la tienda:
+ * - since: desde cuándo se cuentan las ventas de la tienda (las de antes ya se resolvieron a mano).
+ * - stock: el stock que tenía Xubio en la última actualización, por código.
+ * - absorbed: por línea de pedido, cuántas unidades Xubio ya descontó (porque las facturaron).
+ */
+type XubioMemory = { since: string; stock: Record<string, number>; absorbed: Record<string, number> }
+
+// Si Xubio no descuenta una venta de la tienda en 7 días, se deja de restar (se supone que se resolvió de otra forma).
+const PENDING_DAYS = 7
+// Estados en los que el pedido no descontó stock (o ya lo devolvió).
+const NO_STOCK_STATUSES = ['cancelado', 'rechazado', 'reservado'] as const
 
 /**
  * Trae el stock de Xubio y lo copia a la página. Xubio manda: la página solo lee de Xubio y nunca le escribe.
@@ -96,7 +113,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     const client = new XubioClient(clientId, secret)
     await client.getToken()
 
-    const data = { clientIdEnc: encrypt(clientId), secretEnc: encrypt(secret), clientHint: `…${clientId.slice(-4)}`, autoSync: false, lastSyncAt: null, lastResult: Prisma.DbNull, lastError: null }
+    const data = { clientIdEnc: encrypt(clientId), secretEnc: encrypt(secret), clientHint: `…${clientId.slice(-4)}`, autoSync: false, lastSyncAt: null, lastResult: Prisma.DbNull, lastError: null, memory: Prisma.DbNull }
     await this.prisma.xubioConnection.upsert({ where: { id: 'main' }, create: { id: 'main', ...data }, update: data })
     this.client = undefined
     this.cache = undefined
@@ -274,7 +291,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     if (addedNew.length) await this.log(`Se agregaron ${addedNew.length} productos nuevos de Xubio`, { names: addedNew.slice(0, 200) })
 
     const result = { ...plan.summary, updatedProducts, skippedBusy, addedNew: addedNew.length, mode, at: new Date().toISOString() }
-    await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastSyncAt: new Date(), lastResult: result as Prisma.InputJsonValue, lastError: null } })
+    await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastSyncAt: new Date(), lastResult: result as Prisma.InputJsonValue, lastError: null, memory: plan.memory as unknown as Prisma.InputJsonValue } })
     if (plan.summary.changes || mode === 'manual') await this.log('Stock actualizado desde Xubio', result)
     return result
   }
@@ -310,7 +327,11 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
       select: { id: true, name: true, sku: true, stock: true, variants: true, active: true, priceRetail: true, updatedAt: true },
     })
 
-    const summary = { xubioProducts: items.length, matched: 0, changes: 0, unchanged: 0, notInXubio: 0, xubioNotOnWeb: 0, blockedNoPrice: 0, unreadable: unmatchedStock }
+    // Ventas de la tienda que Xubio todavía no descontó: se restan para que el stock no "vuelva".
+    const { memory, pendingFor } = await this.pendingWebSales(items, products, find)
+    const xubioStock = (indexes: number[]) => Math.max(0, stockOf(indexes) - pendingFor(indexes))
+
+    const summary = { xubioProducts: items.length, matched: 0, changes: 0, unchanged: 0, notInXubio: 0, xubioNotOnWeb: 0, blockedNoPrice: 0, unreadable: unmatchedStock, pendingWebSales: 0 }
     const changes: Change[] = []
     const blockedSample: string[] = []
     const lists: Plan['lists'] = { notInXubio: [], xubioNotOnWeb: [], blocked: [] }
@@ -337,7 +358,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
           }
           indexes.forEach((index) => used.add(index))
           summary.matched++
-          const after = stockOf(indexes)
+          const after = xubioStock(indexes)
           total += after
           if (after === before) { summary.unchanged++; continue }
           productChanges.push({ productId: product.id, product: product.name, variant: [variant?.color, variant?.size].filter(Boolean).join(' · ') || String(variant?.sku ?? ''), code: items[indexes[0]].code, before, after })
@@ -352,7 +373,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
         }
         indexes.forEach((index) => used.add(index))
         summary.matched++
-        total = stockOf(indexes)
+        total = xubioStock(indexes)
         if (total === product.stock) { summary.unchanged++; continue }
         productChanges.push({ productId: product.id, product: product.name, variant: '', code: items[indexes[0]].code, before: product.stock, after: total })
       }
@@ -381,7 +402,98 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     lists.blocked.sort(byName)
     lists.xubioNotOnWeb.sort((a, b) => a.name.localeCompare(b.name, 'es'))
 
-    return { summary, changes, updates, blockedSample, lists, xubioNotOnWebSample: notOnWeb.slice(0, 50).map((item: XubioItem) => `${item.code} · ${item.name}`) }
+    summary.pendingWebSales = memory.pendingTotal
+    return { summary, changes, updates, blockedSample, lists, memory: memory.next, xubioNotOnWebSample: notOnWeb.slice(0, 50).map((item: XubioItem) => `${item.code} · ${item.name}`) }
+  }
+
+  /**
+   * Cuenta lo vendido en la tienda que Xubio todavía no descontó.
+   * Cuando facturan la venta en Xubio, el stock de Xubio baja: esa baja se toma como la venta de la tienda
+   * (la más vieja primero) y se deja de restar, así no se descuenta dos veces.
+   */
+  private async pendingWebSales(
+    items: XubioItem[],
+    products: Array<{ id: string; sku: string; variants: unknown }>,
+    find: (keys: string[]) => number[],
+  ) {
+    const row = await this.prisma.xubioConnection.findUnique({ where: { id: 'main' }, select: { memory: true } })
+    const stored = row?.memory as XubioMemory | null | undefined
+    const saved = stored && typeof stored === 'object' && typeof stored.since === 'string' ? stored : null
+    const now = Date.now()
+    // La primera vez se empieza a contar desde ahora: lo vendido antes ya lo resolvieron como siempre.
+    const since = saved?.since ? new Date(saved.since).getTime() : now
+    const from = new Date(Math.max(since, now - PENDING_DAYS * 24 * 60 * 60_000))
+    const absorbed: Record<string, number> = { ...(saved?.absorbed ?? {}) }
+    const lastStock = saved?.stock ?? {}
+
+    const sales = saved ? await this.prisma.orderItem.findMany({
+      where: { order: { deletedAt: null, status: { notIn: [...NO_STOCK_STATUSES] }, createdAt: { gte: from } } },
+      select: { id: true, productId: true, variantSku: true, quantity: true },
+      orderBy: { order: { createdAt: 'asc' } },
+    }) : []
+
+    const byId = new Map(products.map((product) => [product.id, product]))
+    const keyOf = (indexes: number[]) => indexes.map((index) => loose(items[index].code)).sort().join('|')
+    // Stock de Xubio por código (sumado si hay filas repetidas), para comparar con la última vez.
+    const stock: Record<string, number> = {}
+    for (const item of items) { const code = loose(item.code); if (code) stock[code] = (stock[code] ?? 0) + item.stock }
+    const codesOf = (indexes: number[]) => [...new Set(indexes.map((index) => loose(items[index].code)).filter(Boolean))]
+    const stockNow = (indexes: number[]) => codesOf(indexes).reduce((sum, code) => sum + (stock[code] ?? 0), 0)
+    const stockBefore = (indexes: number[]) => {
+      let sum = 0
+      for (const code of codesOf(indexes)) {
+        const value = lastStock[code]
+        if (typeof value !== 'number') return null
+        sum += value
+      }
+      return sum
+    }
+
+    // Agrupa las ventas por código de Xubio (el mismo talle puede venderse en varios pedidos).
+    const groups = new Map<string, { indexes: number[]; lines: Array<{ id: string; quantity: number }> }>()
+    for (const sale of sales) {
+      const product = byId.get(sale.productId)
+      if (!product) continue
+      const variants = Array.isArray(product.variants) ? (product.variants as any[]) : []
+      let keys: string[] = []
+      if (variants.length) {
+        const variant = variants.find((item) => sale.variantSku && String(item?.sku ?? '') === sale.variantSku)
+        if (!variant) continue
+        keys = [variant.sku, ...(Array.isArray(variant.codes) ? variant.codes : [])]
+      } else {
+        keys = [product.sku]
+      }
+      const indexes = find(keys)
+      if (!indexes.length) continue
+      const key = keyOf(indexes)
+      const group = groups.get(key) ?? { indexes, lines: [] }
+      group.lines.push({ id: sale.id, quantity: sale.quantity })
+      groups.set(key, group)
+    }
+
+    const pendingByKey = new Map<string, number>()
+    const nextAbsorbed: Record<string, number> = {}
+    let pendingTotal = 0
+    for (const [key, group] of groups) {
+      const before = stockBefore(group.indexes)
+      // Lo que bajó Xubio desde la última vez se toma como ventas de la tienda que ya facturaron.
+      let drop = before === null ? 0 : Math.max(0, before - stockNow(group.indexes))
+      let pending = 0
+      for (const line of group.lines) {
+        const done = Math.min(line.quantity, absorbed[line.id] ?? 0)
+        const take = Math.min(line.quantity - done, drop)
+        drop -= take
+        nextAbsorbed[line.id] = done + take
+        pending += line.quantity - done - take
+      }
+      if (pending > 0) pendingByKey.set(key, pending)
+      pendingTotal += pending
+    }
+
+    return {
+      memory: { pendingTotal, next: { since: new Date(since).toISOString(), stock, absorbed: nextAbsorbed } satisfies XubioMemory },
+      pendingFor: (indexes: number[]) => pendingByKey.get(keyOf(indexes)) ?? 0,
+    }
   }
 
   private async getClient() {

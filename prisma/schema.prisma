@@ -309,6 +309,8 @@ model XubioConnection {
   lastSyncAt  DateTime?
   lastResult  Json?
   lastError   String?
+  /// Stock de Xubio de la última actualización y ventas de la tienda que Xubio ya descontó.
+  memory      Json?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 }
