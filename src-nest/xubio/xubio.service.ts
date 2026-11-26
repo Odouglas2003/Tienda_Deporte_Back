@@ -6,7 +6,8 @@ import { XubioClient, type XubioItem, type XubioProgress } from './xubio-client'
 
 // Leer todo Xubio tarda unos 11 minutos: una vez por hora alcanza y no lo sobrecarga.
 const AUTO_SYNC_MS = 60 * 60_000
-const SAMPLE = 300
+// Tope de filas que se mandan al panel por lista (sobra para este catálogo).
+const LIST_LIMIT = 5000
 // Lo leído en la vista previa se reusa al tocar "Actualizar ahora" si pasaron menos de 10 minutos.
 const CACHE_MS = 10 * 60_000
 
@@ -36,6 +37,12 @@ type Plan = {
   changes: Change[]
   xubioNotOnWebSample: string[]
   blockedSample: string[]
+  /** Listas completas para ver en el panel. */
+  lists: {
+    notInXubio: Array<{ product: string; variant: string; sku: string }>
+    xubioNotOnWeb: Array<{ code: string; name: string; stock: number }>
+    blocked: Array<{ product: string; sku: string; xubioStock: number }>
+  }
   /** Por producto: variantes con el stock nuevo, para aplicar. */
   updates: Map<string, { updatedAt: Date; variants: any[] | null; stock: number }>
 }
@@ -150,7 +157,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     const plan = await this.buildPlan(onProgress, false)
     // Si se pudo leer, el aviso rojo de un error anterior ya no corresponde.
     await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastError: null } })
-    return { summary: plan.summary, changes: plan.changes.slice(0, SAMPLE), xubioNotOnWebSample: plan.xubioNotOnWebSample, blockedSample: plan.blockedSample }
+    return { summary: plan.summary, changes: plan.changes.slice(0, LIST_LIMIT), xubioNotOnWebSample: plan.xubioNotOnWebSample, blockedSample: plan.blockedSample, lists: plan.lists }
   }
 
   private async autoSync() {
@@ -226,6 +233,8 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     const summary = { xubioProducts: items.length, matched: 0, changes: 0, unchanged: 0, notInXubio: 0, xubioNotOnWeb: 0, blockedNoPrice: 0, unreadable: unmatchedStock }
     const changes: Change[] = []
     const blockedSample: string[] = []
+    const lists: Plan['lists'] = { notInXubio: [], xubioNotOnWeb: [], blocked: [] }
+    const variantLabel = (variant: any) => [variant?.color, variant?.size].filter(Boolean).join(' · ')
     const updates: Plan['updates'] = new Map()
 
     for (const product of products) {
@@ -237,7 +246,12 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
         for (const variant of variants) {
           const indexes = find([variant?.sku, ...(Array.isArray(variant?.codes) ? variant.codes : [])])
           const before = Math.max(0, Math.floor(Number(variant?.stock) || 0))
-          if (!indexes.length) { summary.notInXubio++; total += before; continue }
+          if (!indexes.length) {
+            summary.notInXubio++
+            total += before
+            if (lists.notInXubio.length < LIST_LIMIT) lists.notInXubio.push({ product: product.name, variant: variantLabel(variant), sku: String(variant?.sku ?? '') })
+            continue
+          }
           indexes.forEach((index) => used.add(index))
           summary.matched++
           const after = stockOf(indexes)
@@ -248,7 +262,11 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
         }
       } else {
         const indexes = find([product.sku])
-        if (!indexes.length) { summary.notInXubio++; continue }
+        if (!indexes.length) {
+          summary.notInXubio++
+          if (lists.notInXubio.length < LIST_LIMIT) lists.notInXubio.push({ product: product.name, variant: '', sku: product.sku })
+          continue
+        }
         indexes.forEach((index) => used.add(index))
         summary.matched++
         total = stockOf(indexes)
@@ -261,6 +279,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
       if (product.active && !(Number(product.priceRetail) > 0) && total > 0) {
         summary.blockedNoPrice++
         if (blockedSample.length < 50) blockedSample.push(product.name)
+        if (lists.blocked.length < LIST_LIMIT) lists.blocked.push({ product: product.name, sku: product.sku, xubioStock: total })
         continue
       }
       summary.changes += productChanges.length
@@ -272,7 +291,13 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     summary.xubioNotOnWeb = notOnWeb.length
     changes.sort((a, b) => Math.abs(b.after - b.before) - Math.abs(a.after - a.before))
 
-    return { summary, changes, updates, blockedSample, xubioNotOnWebSample: notOnWeb.slice(0, 50).map((item: XubioItem) => `${item.code} · ${item.name}`) }
+    lists.xubioNotOnWeb = notOnWeb.slice(0, LIST_LIMIT).map((item) => ({ code: item.code, name: item.name, stock: item.stock }))
+    const byName = (a: { product: string }, b: { product: string }) => a.product.localeCompare(b.product, 'es')
+    lists.notInXubio.sort(byName)
+    lists.blocked.sort(byName)
+    lists.xubioNotOnWeb.sort((a, b) => a.name.localeCompare(b.name, 'es'))
+
+    return { summary, changes, updates, blockedSample, lists, xubioNotOnWebSample: notOnWeb.slice(0, 50).map((item: XubioItem) => `${item.code} · ${item.name}`) }
   }
 
   private async getClient() {
