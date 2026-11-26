@@ -5,8 +5,9 @@ import { BadRequestException, Logger, ServiceUnavailableException } from '@nestj
  * nunca llama a endpoints que creen, cambien o borren cosas en Xubio, y no consulta ventas ni clientes.
  */
 const BASE_URL = (process.env.XUBIO_API_URL || 'https://xubio.com/API/1.1').replace(/\/+$/, '')
-const PAGE_SIZE = 500
-const MAX_PAGES = 200
+// Xubio acepta como máximo 100 registros por página.
+const PAGE_SIZE = 100
+const MAX_PAGES = 500
 
 export interface XubioItem {
   /** Código propio del producto en Xubio (la columna UsrCode del Excel). */
