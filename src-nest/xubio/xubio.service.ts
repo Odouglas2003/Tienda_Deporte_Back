@@ -4,7 +4,8 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'crypto'
 import { PrismaService } from '../prisma.service'
 import { XubioClient, type XubioItem, type XubioProgress } from './xubio-client'
 
-const AUTO_SYNC_MS = 15 * 60_000
+// Leer todo Xubio tarda unos 11 minutos: una vez por hora alcanza y no lo sobrecarga.
+const AUTO_SYNC_MS = 60 * 60_000
 const SAMPLE = 300
 // Lo leído en la vista previa se reusa al tocar "Actualizar ahora" si pasaron menos de 10 minutos.
 const CACHE_MS = 10 * 60_000
