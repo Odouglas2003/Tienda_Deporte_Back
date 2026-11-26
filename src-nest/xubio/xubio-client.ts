@@ -8,8 +8,10 @@ const BASE_URL = (process.env.XUBIO_API_URL || 'https://xubio.com/API/1.1').repl
 // Xubio acepta como máximo 100 registros por página.
 const PAGE_SIZE = 100
 const MAX_PAGES = 500
-const PARALLEL = 6
-const REQUEST_TIMEOUT_MS = 45_000
+// Xubio es lento para armar el stock y se cuelga si se le piden varias páginas juntas: de a una y con paciencia.
+const REQUEST_TIMEOUT_MS = 120_000
+
+export type XubioProgress = (step: { done: number; total: number | null }) => void
 
 export interface XubioItem {
   /** Código propio del producto en Xubio (la columna UsrCode del Excel). */
@@ -52,8 +54,9 @@ export class XubioClient {
   }
 
   /** Productos de Xubio con su código y su stock actual (un solo depósito). */
-  async fetchItems(): Promise<{ items: XubioItem[]; unmatchedStock: number }> {
-    const [products, stock] = [await this.getList('/ProductoVentaBean', { activo: '1' }), await this.getStock()]
+  async fetchItems(onProgress?: XubioProgress): Promise<{ items: XubioItem[]; unmatchedStock: number }> {
+    const products = await this.getList('/ProductoVentaBean', { activo: '1' })
+    const stock = await this.getStock(onProgress)
 
     const byId = new Map<string, any>()
     const byName = new Map<string, any[]>()
@@ -90,28 +93,19 @@ export class XubioClient {
     return { items, unmatchedStock }
   }
 
-  private async getStock() {
-    const records = (body: any) => (Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : [])
-    const page = (number: number) => this.get('/productoStock', { pagina: String(number), limitePagina: String(PAGE_SIZE) }, `el stock (página ${number})`)
-    const first = await page(1)
-    const rows: any[] = [...records(first)]
-    const total = Number(first?.paginado?.totalDeRegistros)
-    if (Array.isArray(first) || rows.length < PAGE_SIZE) return rows
-
-    if (Number.isFinite(total) && total > 0) {
-      // Sabemos cuántas páginas son: las pedimos de a varias a la vez (Xubio permite hasta 50 juntas).
-      const pages = Math.min(Math.ceil(total / PAGE_SIZE), MAX_PAGES)
-      for (let start = 2; start <= pages; start += PARALLEL) {
-        const batch = await Promise.all(Array.from({ length: Math.min(PARALLEL, pages - start + 1) }, (_, index) => page(start + index)))
-        for (const body of batch) rows.push(...records(body))
-      }
-      return rows
-    }
-
-    for (let number = 2; number <= MAX_PAGES; number++) {
-      const found = records(await page(number))
+  private async getStock(onProgress?: XubioProgress) {
+    const rows: any[] = []
+    let pages: number | null = null
+    for (let number = 1; number <= MAX_PAGES; number++) {
+      const started = Date.now()
+      const body = await this.get('/productoStock', { pagina: String(number), limitePagina: String(PAGE_SIZE) }, `el stock (página ${number}${pages ? ` de ${pages}` : ''})`)
+      const found = Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : []
       rows.push(...found)
-      if (found.length < PAGE_SIZE) break
+      const total = Number(body?.paginado?.totalDeRegistros)
+      if (Number.isFinite(total) && total > 0) pages = Math.ceil(total / PAGE_SIZE)
+      this.logger.log(`Xubio stock página ${number}${pages ? `/${pages}` : ''}: ${found.length} registros en ${Date.now() - started} ms`)
+      onProgress?.({ done: number, total: pages })
+      if (Array.isArray(body) || found.length < PAGE_SIZE || (pages !== null && number >= pages)) break
     }
     return rows
   }

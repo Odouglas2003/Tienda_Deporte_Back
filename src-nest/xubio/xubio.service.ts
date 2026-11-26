@@ -2,10 +2,23 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { Prisma } from '@prisma/client'
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'crypto'
 import { PrismaService } from '../prisma.service'
-import { XubioClient, type XubioItem } from './xubio-client'
+import { XubioClient, type XubioItem, type XubioProgress } from './xubio-client'
 
 const AUTO_SYNC_MS = 15 * 60_000
 const SAMPLE = 300
+// Lo leído en la vista previa se reusa al tocar "Actualizar ahora" si pasaron menos de 10 minutos.
+const CACHE_MS = 10 * 60_000
+
+type Job = {
+  id: string
+  kind: 'preview' | 'sync'
+  state: 'running' | 'done' | 'error'
+  progress: { done: number; total: number | null }
+  startedAt: string
+  finishedAt?: string
+  result?: unknown
+  error?: string
+}
 
 type Change = { productId: string; product: string; variant: string; code: string; before: number; after: number }
 type Plan = {
@@ -35,6 +48,8 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(XubioService.name)
   private timer?: ReturnType<typeof setInterval>
   private running = false
+  private job: Job | null = null
+  private cache?: { at: number; key: string; data: { items: XubioItem[]; unmatchedStock: number } }
   private client?: { key: string; instance: XubioClient }
 
   constructor(private readonly prisma: PrismaService) {}
@@ -73,6 +88,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     const data = { clientIdEnc: encrypt(clientId), secretEnc: encrypt(secret), clientHint: `…${clientId.slice(-4)}`, autoSync: false, lastSyncAt: null, lastResult: Prisma.DbNull, lastError: null }
     await this.prisma.xubioConnection.upsert({ where: { id: 'main' }, create: { id: 'main', ...data }, update: data })
     this.client = undefined
+    this.cache = undefined
     await this.log('Conexión con Xubio activada', {})
     return this.status()
   }
@@ -80,6 +96,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   async disconnect() {
     await this.prisma.xubioConnection.deleteMany({ where: { id: 'main' } })
     this.client = undefined
+    this.cache = undefined
     await this.log('Conexión con Xubio desactivada', {})
     return { connected: false }
   }
@@ -94,23 +111,45 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     return this.status()
   }
 
+  /**
+   * Xubio puede tardar varios minutos en mandar el stock, así que la lectura corre en segundo plano
+   * y el panel pregunta cómo va (getJob). "preview" no escribe nada; "sync" copia el stock a la página.
+   */
+  start(kind: 'preview' | 'sync') {
+    if (this.job?.state === 'running') {
+      if (this.job.kind === kind) return this.job
+      throw new ConflictException('Ya se está leyendo Xubio. Esperá a que termine.')
+    }
+    if (this.running) throw new ConflictException('Ya se está actualizando el stock solo. Esperá un minuto.')
+    const job: Job = { id: Date.now().toString(36), kind, state: 'running', progress: { done: 0, total: null }, startedAt: new Date().toISOString() }
+    this.job = job
+    this.running = true
+    const onProgress: XubioProgress = (progress) => { job.progress = progress }
+    void (async () => {
+      try {
+        job.result = kind === 'preview' ? await this.preview(onProgress) : await this.runSync('manual', onProgress)
+        job.state = 'done'
+      } catch (error) {
+        job.error = error instanceof Error ? error.message : 'Error desconocido'
+        job.state = 'error'
+      } finally {
+        job.finishedAt = new Date().toISOString()
+        this.running = false
+      }
+    })()
+    return job
+  }
+
+  getJob() {
+    return this.job ?? { state: 'none' }
+  }
+
   /** Muestra qué cambiaría, sin tocar nada. */
-  async preview() {
-    const plan = await this.buildPlan()
+  private async preview(onProgress: XubioProgress) {
+    const plan = await this.buildPlan(onProgress, false)
     // Si se pudo leer, el aviso rojo de un error anterior ya no corresponde.
     await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastError: null } })
     return { summary: plan.summary, changes: plan.changes.slice(0, SAMPLE), xubioNotOnWebSample: plan.xubioNotOnWebSample, blockedSample: plan.blockedSample }
-  }
-
-  /** Copia el stock de Xubio a la página. */
-  async sync() {
-    if (this.running) throw new ConflictException('Ya se está actualizando el stock. Esperá un momento.')
-    this.running = true
-    try {
-      return await this.runSync('manual')
-    } finally {
-      this.running = false
-    }
   }
 
   private async autoSync() {
@@ -118,7 +157,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     this.running = true
     try {
       const connection = await this.prisma.xubioConnection.findUnique({ where: { id: 'main' }, select: { autoSync: true } })
-      if (connection?.autoSync) await this.runSync('automatic')
+      if (connection?.autoSync) await this.runSync('automatic', undefined)
     } catch (error) {
       this.logger.warn(`Stock automático desde Xubio falló: ${error instanceof Error ? error.message : error}`)
     } finally {
@@ -126,10 +165,10 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async runSync(mode: 'manual' | 'automatic') {
+  private async runSync(mode: 'manual' | 'automatic', onProgress: XubioProgress | undefined) {
     let plan: Plan
     try {
-      plan = await this.buildPlan()
+      plan = await this.buildPlan(onProgress, mode === 'manual')
     } catch (error) {
       await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastError: error instanceof Error ? error.message : 'Error desconocido' } })
       throw error
@@ -152,8 +191,13 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     return result
   }
 
-  private async buildPlan(): Promise<Plan> {
-    const { items, unmatchedStock } = await (await this.getClient()).fetchItems()
+  private async buildPlan(onProgress: XubioProgress | undefined, useCache: boolean): Promise<Plan> {
+    const client = await this.getClient()
+    const key = this.client?.key ?? ''
+    const cached = useCache && this.cache && this.cache.key === key && Date.now() - this.cache.at < CACHE_MS ? this.cache.data : null
+    const data = cached ?? await client.fetchItems(onProgress)
+    if (!cached) this.cache = { at: Date.now(), key, data }
+    const { items, unmatchedStock } = data
 
     const byCode = new Map<string, number[]>()
     const byBarcode = new Map<string, number[]>()

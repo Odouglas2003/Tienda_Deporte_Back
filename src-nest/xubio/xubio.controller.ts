@@ -15,6 +15,7 @@ export class XubioController {
   @Post('connect') connect(@Body() body: any) { return this.xubio.connect(body) }
   @Delete() disconnect() { return this.xubio.disconnect() }
   @Put('auto') setAutoSync(@Body() body: any) { return this.xubio.setAutoSync(body) }
-  @Post('preview') preview() { return this.xubio.preview() }
-  @Post('sync') sync() { return this.xubio.sync() }
+  @Post('preview') preview() { return this.xubio.start('preview') }
+  @Post('sync') sync() { return this.xubio.start('sync') }
+  @Get('job') job() { return this.xubio.getJob() }
 }
