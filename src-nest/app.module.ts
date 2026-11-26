@@ -11,9 +11,10 @@ import { OrdersModule } from './orders/orders.module'
 import { AdminModule } from './admin/admin.module'
 import { CommunicationsModule } from './communications/communications.module'
 import { CouponsModule } from './coupons/coupons.module'
+import { XubioModule } from './xubio/xubio.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, UsersModule, ProductsModule, OrdersModule, AdminModule, CommunicationsModule, CouponsModule, AnnouncementsModule, CartsModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, UsersModule, ProductsModule, OrdersModule, AdminModule, CommunicationsModule, CouponsModule, AnnouncementsModule, CartsModule, XubioModule],
   controllers: [HealthController],
 })
 export class AppModule {}

@@ -297,3 +297,18 @@ model SavedCart {
 
   @@index([updatedAt])
 }
+
+/// Conexión con Xubio (sistema de facturación) para traer el stock. Hay una sola fila ("main").
+/// Las claves se guardan cifradas y nunca se devuelven al panel.
+model XubioConnection {
+  id          String    @id @default("main")
+  clientIdEnc String
+  secretEnc   String
+  clientHint  String    @default("")
+  autoSync    Boolean   @default(false)
+  lastSyncAt  DateTime?
+  lastResult  Json?
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
