@@ -8,8 +8,10 @@ const BASE_URL = (process.env.XUBIO_API_URL || 'https://xubio.com/API/1.1').repl
 // Xubio acepta como máximo 100 registros por página.
 const PAGE_SIZE = 100
 const MAX_PAGES = 500
-// Xubio es lento para armar el stock y se cuelga si se le piden varias páginas juntas: de a una y con paciencia.
+// Xubio es lento para armar el stock (unos 15 segundos por página) y se cuelga si se le piden muchas juntas.
 const REQUEST_TIMEOUT_MS = 120_000
+// Páginas que se piden juntas. Si Xubio se traba, se pasa solo a 1.
+const PARALLEL = 3
 
 export type XubioProgress = (step: { done: number; total: number | null }) => void
 
@@ -94,20 +96,54 @@ export class XubioClient {
   }
 
   private async getStock(onProgress?: XubioProgress) {
-    const rows: any[] = []
-    let pages: number | null = null
-    for (let number = 1; number <= MAX_PAGES; number++) {
+    const records = (body: any): any[] => (Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : [])
+    const fetchPage = async (number: number, pages: number | null) => {
       const started = Date.now()
       const body = await this.get('/productoStock', { pagina: String(number), limitePagina: String(PAGE_SIZE) }, `el stock (página ${number}${pages ? ` de ${pages}` : ''})`)
-      const found = Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : []
-      rows.push(...found)
-      const total = Number(body?.paginado?.totalDeRegistros)
-      if (Number.isFinite(total) && total > 0) pages = Math.ceil(total / PAGE_SIZE)
-      this.logger.log(`Xubio stock página ${number}${pages ? `/${pages}` : ''}: ${found.length} registros en ${Date.now() - started} ms`)
-      onProgress?.({ done: number, total: pages })
-      if (Array.isArray(body) || found.length < PAGE_SIZE || (pages !== null && number >= pages)) break
+      this.logger.log(`Xubio stock página ${number}${pages ? `/${pages}` : ''}: ${records(body).length} registros en ${Date.now() - started} ms`)
+      return body
     }
-    return rows
+
+    // La primera página dice cuántas hay en total.
+    const first = await fetchPage(1, null)
+    const total = Number(first?.paginado?.totalDeRegistros)
+    const pages = Number.isFinite(total) && total > 0 ? Math.min(Math.ceil(total / PAGE_SIZE), MAX_PAGES) : null
+    onProgress?.({ done: 1, total: pages })
+    if (Array.isArray(first) || records(first).length < PAGE_SIZE || pages === 1) return records(first)
+
+    if (pages === null) {
+      // Sin total: de a una hasta que se acaben.
+      const rows = records(first)
+      for (let number = 2; number <= MAX_PAGES; number++) {
+        const found = records(await fetchPage(number, null))
+        rows.push(...found)
+        onProgress?.({ done: number, total: null })
+        if (found.length < PAGE_SIZE) break
+      }
+      return rows
+    }
+
+    // De a PARALLEL páginas juntas. Si Xubio se traba con alguna, sigue de a una (plan B).
+    const byPage = new Map<number, any[]>([[1, records(first)]])
+    const pending = Array.from({ length: pages - 1 }, (_, index) => index + 2)
+    let parallel = PARALLEL
+    while (pending.length) {
+      const batch = pending.splice(0, parallel)
+      const results = await Promise.allSettled(batch.map((number) => fetchPage(number, pages)))
+      const failed: number[] = []
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') byPage.set(batch[index], records(result.value))
+        else failed.push(batch[index])
+      })
+      if (failed.length) {
+        if (parallel === 1) throw (results.find((result) => result.status === 'rejected') as PromiseRejectedResult).reason
+        this.logger.warn(`Xubio se trabó con ${parallel} páginas juntas: sigo de a una.`)
+        parallel = 1
+        pending.unshift(...failed)
+      }
+      onProgress?.({ done: byPage.size, total: pages })
+    }
+    return [...byPage.keys()].sort((a, b) => a - b).flatMap((number) => byPage.get(number) ?? [])
   }
 
   private async getList(path: string, query: Record<string, string>) {
