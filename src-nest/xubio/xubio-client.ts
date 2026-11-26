@@ -8,6 +8,8 @@ const BASE_URL = (process.env.XUBIO_API_URL || 'https://xubio.com/API/1.1').repl
 // Xubio acepta como máximo 100 registros por página.
 const PAGE_SIZE = 100
 const MAX_PAGES = 500
+const PARALLEL = 6
+const REQUEST_TIMEOUT_MS = 45_000
 
 export interface XubioItem {
   /** Código propio del producto en Xubio (la columna UsrCode del Excel). */
@@ -89,30 +91,43 @@ export class XubioClient {
   }
 
   private async getStock() {
-    const rows: any[] = []
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const body = await this.get('/productoStock', { pagina: String(page), limitePagina: String(PAGE_SIZE) })
-      const records = Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : []
-      rows.push(...records)
-      const total = Number(body?.paginado?.totalDeRegistros)
-      if (Array.isArray(body) || !records.length || records.length < PAGE_SIZE || (Number.isFinite(total) && rows.length >= total)) break
+    const records = (body: any) => (Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : [])
+    const page = (number: number) => this.get('/productoStock', { pagina: String(number), limitePagina: String(PAGE_SIZE) }, `el stock (página ${number})`)
+    const first = await page(1)
+    const rows: any[] = [...records(first)]
+    const total = Number(first?.paginado?.totalDeRegistros)
+    if (Array.isArray(first) || rows.length < PAGE_SIZE) return rows
+
+    if (Number.isFinite(total) && total > 0) {
+      // Sabemos cuántas páginas son: las pedimos de a varias a la vez (Xubio permite hasta 50 juntas).
+      const pages = Math.min(Math.ceil(total / PAGE_SIZE), MAX_PAGES)
+      for (let start = 2; start <= pages; start += PARALLEL) {
+        const batch = await Promise.all(Array.from({ length: Math.min(PARALLEL, pages - start + 1) }, (_, index) => page(start + index)))
+        for (const body of batch) rows.push(...records(body))
+      }
+      return rows
+    }
+
+    for (let number = 2; number <= MAX_PAGES; number++) {
+      const found = records(await page(number))
+      rows.push(...found)
+      if (found.length < PAGE_SIZE) break
     }
     return rows
   }
 
   private async getList(path: string, query: Record<string, string>) {
-    const body = await this.get(path, query)
+    const body = await this.get(path, query, 'la lista de productos')
     return Array.isArray(body) ? body : Array.isArray(body?.registros) ? body.registros : []
   }
 
-  private async get(path: string, query: Record<string, string>) {
+  private async get(path: string, query: Record<string, string>, what: string) {
     const url = `${BASE_URL}${path}?${new URLSearchParams(query)}`
-    const what = path === '/productoStock' ? 'el stock' : 'la lista de productos'
-    let response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${await this.getToken()}`, Accept: 'application/json' } })
+    let response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${await this.getToken()}`, Accept: 'application/json' } }, what)
     if (response.status === 401) {
       // Puede ser un acceso vencido: pedimos uno nuevo y probamos una vez más.
       this.token = undefined
-      response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${await this.getToken()}`, Accept: 'application/json' } })
+      response = await this.fetchWithTimeout(url, { headers: { Authorization: `Bearer ${await this.getToken()}`, Accept: 'application/json' } }, what)
     }
     if (!response.ok) {
       // Mostramos qué parte falló y lo que dice Xubio, para saber si es el plan, un permiso o un error de ellos.
@@ -125,12 +140,22 @@ export class XubioClient {
     return response.json()
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit) {
-    try {
-      return await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) })
-    } catch {
-      throw new ServiceUnavailableException('No se pudo conectar con Xubio. Probá de nuevo en un rato.')
+  private async fetchWithTimeout(url: string, init: RequestInit, what = 'el acceso') {
+    // Si Xubio tarda o se corta, probamos una vez más antes de avisar.
+    let lastError: unknown
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+      } catch (error) {
+        lastError = error
+        if (attempt === 1) await new Promise((resolve) => setTimeout(resolve, 1500))
+      }
     }
+    const slow = lastError instanceof Error && (lastError.name === 'TimeoutError' || lastError.name === 'AbortError')
+    this.logger.warn(`Xubio ${what}: ${lastError instanceof Error ? `${lastError.name} ${lastError.message}` : lastError}`)
+    throw new ServiceUnavailableException(slow
+      ? `Xubio tardó demasiado en mandar ${what}. Probá de nuevo en un rato.`
+      : `No se pudo conectar con Xubio al pedir ${what}. Probá de nuevo en un rato.`)
   }
 }
 

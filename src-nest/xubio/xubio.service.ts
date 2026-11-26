@@ -97,6 +97,8 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   /** Muestra qué cambiaría, sin tocar nada. */
   async preview() {
     const plan = await this.buildPlan()
+    // Si se pudo leer, el aviso rojo de un error anterior ya no corresponde.
+    await this.prisma.xubioConnection.updateMany({ where: { id: 'main' }, data: { lastError: null } })
     return { summary: plan.summary, changes: plan.changes.slice(0, SAMPLE), xubioNotOnWebSample: plan.xubioNotOnWebSample, blockedSample: plan.blockedSample }
   }
 
