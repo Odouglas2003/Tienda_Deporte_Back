@@ -275,12 +275,12 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (!productChanges.length) continue
-      // Igual que al editar a mano: un producto publicado sin precio no puede quedar con stock (se vendería a $0).
-      if (product.active && !(Number(product.priceRetail) > 0) && total > 0) {
+      // Sin precio también se actualiza: en la tienda sale "Consultar precio" y el pedido se rechaza hasta que tenga precio.
+      // Solo se cuentan para avisar en el panel.
+      if (!(Number(product.priceRetail) > 0) && total > 0) {
         summary.blockedNoPrice++
         if (blockedSample.length < 50) blockedSample.push(product.name)
         if (lists.blocked.length < LIST_LIMIT) lists.blocked.push({ product: product.name, sku: product.sku, xubioStock: total })
-        continue
       }
       summary.changes += productChanges.length
       changes.push(...productChanges)

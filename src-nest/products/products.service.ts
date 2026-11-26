@@ -207,12 +207,8 @@ export class ProductsService {
       data.variants = variants
       if (variants.length) data.stock = variants.reduce((sum, variant) => sum + variant.stock, 0)
     }
-    // Un producto sin precio no se publica (en la tienda saldría a $0).
-    const willBeActive = data.active ?? product.active
-    const retail = data.priceRetail ?? product.priceRetail
-    const stockAfter = data.stock ?? product.stock
-    // Sin precio se puede mostrar (sale "$0" y "Sin stock"), pero no con stock: se vendería a $0.
-    if (willBeActive && !(Number(retail) > 0) && Number(stockAfter) > 0) throw new BadRequestException('Un producto sin precio no puede tener stock publicado: cargale el precio minorista o dejá el stock en 0.')
+    // Un producto sin precio puede tener stock (lo trae Xubio): en la tienda sale "Consultar precio"
+    // y los pedidos o reservas sin precio se rechazan, así que nunca se vende a $0.
     if (expectedUpdatedAt !== undefined && new Date(expectedUpdatedAt).getTime() !== product.updatedAt.getTime()) throw new ConflictException('El producto cambió mientras editabas. Cerrá y recargá la lista antes de guardar.')
     const changed = await this.prisma.product.updateMany({ where: { id, deletedAt: null, updatedAt: product.updatedAt }, data })
     if (!changed.count) throw new ConflictException('El stock o precio cambió. Recargá el producto antes de guardar.')
