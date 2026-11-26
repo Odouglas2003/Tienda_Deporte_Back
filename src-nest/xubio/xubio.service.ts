@@ -261,8 +261,13 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Lo nuevo de Xubio entra visible, igual que al agregarlo a mano: sin foto y con "Consultar precio" hasta que le carguen el precio.
+    // Si se parece a uno que ya está (mismo modelo con otro color o talle), no se crea solo: queda en la lista
+    // "En Xubio pero no en la web" para que lo sumen a mano a ese producto y no quede la zapatilla repetida.
     const addedNew: string[] = []
+    const onWeb = await this.prisma.product.findMany({ where: { deletedAt: null }, select: { name: true, sku: true, variants: true } })
+    const similar = similarityIndex(onWeb)
     for (const group of [...this.notOnWeb.values()]) {
+      if (similar(group)) continue
       const outcome = await this.createFromGroup(group, true)
       if (outcome.ok) addedNew.push(group.name)
     }
@@ -437,6 +442,32 @@ function groupSku(codes: string[]) {
   for (const code of codes.slice(1)) while (prefix && !code.startsWith(prefix)) prefix = prefix.slice(0, -1)
   const trimmed = prefix.replace(/[^A-Za-z0-9]+[A-Za-z0-9]*$/, '').replace(/[^A-Za-z0-9]+$/, '')
   return trimmed.length >= 4 ? trimmed : `${codes[0]}-G`
+}
+
+const NAME_STOPWORDS = new Set(['ZAPATILLA', 'ZAPATILLAS', 'DE', 'LA', 'EL', 'LOS', 'LAS', 'CON', 'PARA', 'Y'])
+const nameWords = (name: string) => new Set(foldText(String(name).replace(/\([^()]*\)\s*$/, '')).toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter((word) => word.length > 1 && !NAME_STOPWORDS.has(word)))
+/** Código del modelo, sin talle ni color: "SKE 150510/UN/20" → "SKE150510". */
+const modelCode = (code: unknown) => loose(String(code ?? '').split('/')[0])
+
+/** Dice si un producto de Xubio parece el mismo modelo que uno de la página (por código de modelo o por nombre casi igual). */
+function similarityIndex(products: Array<{ name: string; sku: string; variants: unknown }>) {
+  const models = new Set<string>()
+  const names = products.map((product) => nameWords(product.name))
+  for (const product of products) {
+    const codes = [product.sku, ...(Array.isArray(product.variants) ? (product.variants as any[]).map((variant) => variant?.sku) : [])]
+    for (const code of codes) { const model = modelCode(code); if (model.length >= 5) models.add(model) }
+  }
+  return (group: NotOnWebGroup) => {
+    if (group.items.some((item) => models.has(modelCode(item.code)))) return true
+    const words = nameWords(group.name)
+    if (words.size < 2) return false
+    return names.some((other) => {
+      if (other.size < 2) return false
+      let shared = 0
+      words.forEach((word) => { if (other.has(word)) shared++ })
+      return shared / Math.min(words.size, other.size) >= 0.75
+    })
+  }
 }
 
 const loose = (value: unknown) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
