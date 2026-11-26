@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Post, Put, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Post, Put, Req, UseGuards } from '@nestjs/common'
 import { UserRole } from '@prisma/client'
 import { AuthGuard } from '../auth/auth.guard'
 import { Roles } from '../auth/auth.decorator'
@@ -18,4 +18,5 @@ export class XubioController {
   @Post('preview') preview() { return this.xubio.start('preview') }
   @Post('sync') sync() { return this.xubio.start('sync') }
   @Get('job') job() { return this.xubio.getJob() }
+  @Post('add-products') addProducts(@Body() body: any, @Req() request: any) { return this.xubio.addProducts(body, request.auth?.id ?? request.auth?.sub) }
 }

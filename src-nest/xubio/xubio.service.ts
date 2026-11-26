@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { Prisma } from '@prisma/client'
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'crypto'
 import { PrismaService } from '../prisma.service'
+import { classifyProduct, foldText, isNotAProduct } from '../products/product-types'
 import { XubioClient, type XubioItem, type XubioProgress } from './xubio-client'
 
 // Leer todo Xubio tarda unos 11 minutos: una vez por hora alcanza y no lo sobrecarga.
@@ -40,7 +41,7 @@ type Plan = {
   /** Listas completas para ver en el panel. */
   lists: {
     notInXubio: Array<{ product: string; variant: string; sku: string }>
-    xubioNotOnWeb: Array<{ code: string; name: string; stock: number }>
+    xubioNotOnWeb: Array<{ code: string; name: string; stock: number; variants: number }>
     blocked: Array<{ product: string; sku: string; xubioStock: number }>
   }
   /** Por producto: variantes con el stock nuevo, para aplicar. */
@@ -57,6 +58,8 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   private timer?: ReturnType<typeof setInterval>
   private running = false
   private job: Job | null = null
+  /** Productos de Xubio que no están en la web, de la última lectura (para poder agregarlos). */
+  private notOnWeb = new Map<string, NotOnWebGroup>()
   private cache?: { at: number; key: string; data: { items: XubioItem[]; unmatchedStock: number } }
   private client?: { key: string; instance: XubioClient }
 
@@ -146,6 +149,65 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
       }
     })()
     return job
+  }
+
+  /**
+   * Agrega a la página productos que están en Xubio y no en la web. Solo se puede con los de la última lectura:
+   * entran con el nombre, el código y el stock de Xubio, sin precio ("Consultar precio") y sin foto.
+   */
+  async addProducts(body: any, actorId?: string) {
+    const codes = Array.isArray(body?.codes) ? [...new Set(body.codes.filter((code: unknown) => typeof code === 'string' && code.trim()).map((code: string) => code.trim()))] as string[] : []
+    if (!codes.length || codes.length > 1000) throw new BadRequestException('Elegí qué productos agregar.')
+    if (!this.notOnWeb.size) throw new BadRequestException('Tocá "Ver qué cambiaría" de nuevo y después agregalos.')
+
+    const created: Array<{ code: string; name: string; category: string }> = []
+    const skipped: Array<{ code: string; name: string; reason: string }> = []
+    for (const code of codes) {
+      const group = this.notOnWeb.get(code)
+      if (!group) { skipped.push({ code, name: '', reason: 'No está en la última lectura de Xubio. Tocá "Ver qué cambiaría" de nuevo.' }); continue }
+      const name = group.name
+      if (isNotAProduct(name)) { skipped.push({ code, name, reason: 'No parece un producto (por ejemplo, un descuento).' }); continue }
+      const sku = group.sku
+      const existing = await this.prisma.product.findUnique({ where: { sku }, select: { deletedAt: true } })
+      if (existing) {
+        skipped.push({ code, name, reason: existing.deletedAt ? 'Ya existió en la página y se borró. Restauralo desde Productos.' : 'Ya está en la página.' })
+        this.notOnWeb.delete(code)
+        continue
+      }
+      // Mismo nombre que uno de la página: le faltan talles a ese producto, no hay que crear otro.
+      const sameName = await this.prisma.product.findFirst({ where: { deletedAt: null, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })
+      if (sameName) {
+        skipped.push({ code, name, reason: 'Ya hay un producto con ese nombre en la página: sumale el talle/color desde Productos.' })
+        continue
+      }
+      const { category } = classifyProduct(name)
+      await this.prisma.category.upsert({
+        where: { normalizedName: foldText(category) },
+        update: {},
+        create: { name: category, normalizedName: foldText(category), slug: foldText(category).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') },
+      })
+      // Un solo código: producto simple. Varios (talles/colores): un producto con sus variantes, como el resto de la tienda.
+      const variants = group.items.length > 1
+        ? group.items.map((item) => ({ sku: item.code, codes: item.barcode && item.barcode !== item.code ? [item.barcode] : [], color: item.color, size: item.size, gender: '', image: '', stock: item.stock, priceRetail: 0, priceWholesale: 0 }))
+        : []
+      const stock = group.items.reduce((total, item) => total + item.stock, 0)
+      const colors = [...new Set(variants.map((variant) => variant.color).filter(Boolean))]
+      const sizes = [...new Set(variants.map((variant) => variant.size).filter(Boolean))]
+      try {
+        await this.prisma.product.create({
+          data: { name, sku, category, categories: [category], priceRetail: 0, priceWholesale: 0, stock, images: [], tags: [], colors, sizes, variants: variants as Prisma.InputJsonValue, active: true },
+        })
+      } catch {
+        skipped.push({ code, name, reason: 'No se pudo crear. Probá de nuevo.' })
+        continue
+      }
+      created.push({ code, name, category })
+      this.notOnWeb.delete(code)
+    }
+    if (created.length) {
+      await this.prisma.activityLog.create({ data: { userId: actorId ?? null, action: `Agregar ${created.length} productos desde Xubio`, entity: 'product', metadata: { codes: created.map((item) => item.code) } } }).catch(() => null)
+    }
+    return { created, skipped }
   }
 
   getJob() {
@@ -243,6 +305,9 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
       let total = 0
 
       if (variants.length) {
+        // Si Xubio tiene el producto entero con el mismo código que la web, ya está en la página
+        // (cargado por talle): no se lo muestra como faltante, aunque su stock no se pueda repartir por talle.
+        for (const index of find([product.sku])) used.add(index)
         for (const variant of variants) {
           const indexes = find([variant?.sku, ...(Array.isArray(variant?.codes) ? variant.codes : [])])
           const before = Math.max(0, Math.floor(Number(variant?.stock) || 0))
@@ -288,10 +353,11 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
     }
 
     const notOnWeb = items.filter((_, index) => !used.has(index))
+    this.notOnWeb = groupNotOnWeb(notOnWeb)
     summary.xubioNotOnWeb = notOnWeb.length
     changes.sort((a, b) => Math.abs(b.after - b.before) - Math.abs(a.after - a.before))
 
-    lists.xubioNotOnWeb = notOnWeb.slice(0, LIST_LIMIT).map((item) => ({ code: item.code, name: item.name, stock: item.stock }))
+    lists.xubioNotOnWeb = [...this.notOnWeb.values()].slice(0, LIST_LIMIT).map((group) => ({ code: group.key, name: group.name, stock: group.items.reduce((total, item) => total + item.stock, 0), variants: group.items.length }))
     const byName = (a: { product: string }, b: { product: string }) => a.product.localeCompare(b.product, 'es')
     lists.notInXubio.sort(byName)
     lists.blocked.sort(byName)
@@ -320,6 +386,44 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   private log(action: string, metadata: Record<string, unknown>) {
     return this.prisma.activityLog.create({ data: { action, entity: 'xubio', metadata: metadata as Prisma.InputJsonValue } }).catch(() => null)
   }
+}
+
+type NotOnWebGroup = { key: string; name: string; sku: string; items: Array<XubioItem & { color: string; size: string }> }
+
+/**
+ * En Xubio muchos productos van uno por talle/color: "ZAPATILLA X (NEGRO, 36)", "ZAPATILLA X (NEGRO, 37)".
+ * Se juntan por el nombre sin el paréntesis para que en la página sea un producto con sus talles y colores.
+ */
+function groupNotOnWeb(items: XubioItem[]) {
+  const byBase = new Map<string, Array<XubioItem & { base: string; color: string; size: string }>>()
+  for (const item of items) {
+    const name = item.name.trim() || item.code
+    const match = name.match(/^(.*?)\s*\(([^()]*)\)\s*$/)
+    const parts = match ? match[2].split(',').map((part) => part.trim()).filter(Boolean) : []
+    const base = match && match[1].trim() && parts.length ? match[1].trim() : name
+    const [color, size] = parts.length >= 2 ? [parts.slice(0, -1).join(', '), parts[parts.length - 1]] : ['', parts[0] ?? '']
+    const key = foldText(base)
+    byBase.set(key, [...(byBase.get(key) ?? []), { ...item, base, color, size }])
+  }
+  const groups = new Map<string, NotOnWebGroup>()
+  for (const list of byBase.values()) {
+    if (list.length === 1) {
+      const [item] = list
+      groups.set(item.code, { key: item.code, name: item.name.trim() || item.code, sku: item.code, items: [{ ...item, color: '', size: '' }] })
+      continue
+    }
+    const key = `G:${list[0].base}`
+    groups.set(key, { key, name: list[0].base, sku: groupSku(list.map((item) => item.code)), items: list.map(({ base: _base, ...item }) => item) })
+  }
+  return new Map([...groups.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name, 'es')))
+}
+
+/** Código del producto agrupado: la parte común de los códigos ("FI 1287149/36/1" y "FI 1287149/37/1" → "FI 1287149"). */
+function groupSku(codes: string[]) {
+  let prefix = codes[0] ?? ''
+  for (const code of codes.slice(1)) while (prefix && !code.startsWith(prefix)) prefix = prefix.slice(0, -1)
+  const trimmed = prefix.replace(/[^A-Za-z0-9]+[A-Za-z0-9]*$/, '').replace(/[^A-Za-z0-9]+$/, '')
+  return trimmed.length >= 4 ? trimmed : `${codes[0]}-G`
 }
 
 const loose = (value: unknown) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
