@@ -7,6 +7,8 @@ import { XubioClient, type XubioItem, type XubioProgress } from './xubio-client'
 
 // Leer todo Xubio tarda unos 11 minutos: una vez por hora alcanza y no lo sobrecarga.
 const AUTO_SYNC_MS = 60 * 60_000
+// Cada cuánto se fija si ya toca actualizar.
+const CHECK_MS = 5 * 60_000
 // Tope de filas que se mandan al panel por lista (sobra para este catálogo).
 const LIST_LIMIT = 5000
 // Lo leído en la vista previa se reusa al tocar "Actualizar ahora" si pasaron menos de 10 minutos.
@@ -74,6 +76,7 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(XubioService.name)
   private timer?: ReturnType<typeof setInterval>
   private running = false
+  private lastAutoAttempt = 0
   private job: Job | null = null
   /** Productos de Xubio que no están en la web, de la última lectura (para poder agregarlos). */
   private notOnWeb = new Map<string, NotOnWebGroup>()
@@ -83,8 +86,12 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly prisma: PrismaService) {}
 
   onModuleInit() {
-    this.timer = setInterval(() => { void this.autoSync() }, AUTO_SYNC_MS)
+    // Render (plan gratis) apaga el servidor cuando no hay visitas, y dormido no corre ningún reloj.
+    // Por eso no se espera "1 hora desde que arrancó": cada pocos minutos (y al despertar) se fija
+    // cuándo fue la última actualización, y si pasó 1 hora, actualiza.
+    this.timer = setInterval(() => { void this.autoSync() }, CHECK_MS)
     this.timer.unref()
+    setTimeout(() => { void this.autoSync() }, 30_000).unref()
   }
 
   onModuleDestroy() { if (this.timer) clearInterval(this.timer) }
@@ -245,11 +252,17 @@ export class XubioService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async autoSync() {
-    if (this.running) return
+    if (this.running || this.job?.state === 'running') return
+    // Si la última vez falló, no se reintenta enseguida (leer Xubio tarda ~11 minutos).
+    if (Date.now() - this.lastAutoAttempt < AUTO_SYNC_MS) return
     this.running = true
     try {
-      const connection = await this.prisma.xubioConnection.findUnique({ where: { id: 'main' }, select: { autoSync: true } })
-      if (connection?.autoSync) await this.runSync('automatic', undefined)
+      const connection = await this.prisma.xubioConnection.findUnique({ where: { id: 'main' }, select: { autoSync: true, lastSyncAt: true } })
+      const due = !connection?.lastSyncAt || Date.now() - connection.lastSyncAt.getTime() >= AUTO_SYNC_MS - CHECK_MS
+      if (connection?.autoSync && due) {
+        this.lastAutoAttempt = Date.now()
+        await this.runSync('automatic', undefined)
+      }
     } catch (error) {
       this.logger.warn(`Stock automático desde Xubio falló: ${error instanceof Error ? error.message : error}`)
     } finally {
